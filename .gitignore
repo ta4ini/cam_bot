@@ -1,0 +1,7 @@
+/target
+/model
+/motion
+
+*.txt
+*.xml
+.env
