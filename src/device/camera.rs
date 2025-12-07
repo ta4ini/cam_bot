@@ -1,28 +1,32 @@
-use chrono::{DateTime, Local};
+use log::warn;
 use opencv::{
     core::{Mat, Point, Rect, Scalar, Size, Vector, count_non_zero},
-    highgui::{self, wait_key},
+    imgcodecs,
     imgproc::{
-        self, ContourApproximationModes, LINE_8, MORPH_CLOSE, MORPH_ELLIPSE, RetrievalModes,
-        bounding_rect, contour_area, find_contours, get_structuring_element, morphology_ex,
-        rectangle,
+        self, COLOR_BGR2GRAY, ContourApproximationModes, LINE_8, MORPH_CLOSE, MORPH_ELLIPSE,
+        RetrievalModes, bounding_rect, contour_area, cvt_color, find_contours,
+        get_structuring_element, morphology_ex, rectangle,
     },
     objdetect::{self, CASCADE_SCALE_IMAGE},
     prelude::*,
     video::create_background_subtractor_mog2,
-    videoio::{self, CAP_PROP_FPS, CAP_PROP_FRAME_HEIGHT, CAP_PROP_FRAME_WIDTH},
 };
 use std::{io::BufReader, path::PathBuf, time::Duration};
-use tokio::{net::UdpSocket, time::timeout};
+use tokio::{
+    net::UdpSocket,
+    sync::{broadcast, mpsc},
+    time::timeout,
+};
 use uuid::Uuid;
 use xml::reader::{EventReader, XmlEvent};
 
-use crate::device::CameraInfo;
+use crate::{STOP_SENDER, device::{CameraInfo, CameraSettings, FrameData}};
 
 const WS_DISCOVERY_IP_MULTICAST_ADDRESS: &str = "239.255.255.250:3702";
 const UDP_SOCKET_ADDR: &str = "0.0.0.0:0"; // let OS choose port
 
-pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::Error>> {
+pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::Error + Send + Sync>>
+{
     // Bind to "0.0.0.0" by default
     // This is to receive incoming replies
     let udp_client = UdpSocket::bind(UDP_SOCKET_ADDR).await?;
@@ -89,6 +93,7 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
                             if let Ok(XmlEvent::Characters(c)) = xml
                                 && c.contains("NetworkVideoTransmitter")
                             {
+                                println!("{:?}", c);
                                 match camera_found.iter().find(|info| info.ip_addres == addr.ip()) {
                                     Some(res) => {
                                         println!("Camera exists{:?}", res.url);
@@ -96,7 +101,7 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
                                     }
                                     None => camera_found.push(CameraInfo {
                                         url: format!(
-                                            "rtsp://{}:3702/user=admin&password=",
+                                            "rtsp://{}:554/user=admin&password=&channel=1&stream=0.sdp",
                                             addr.ip()
                                         ),
                                         ip_addres: addr.ip(),
@@ -115,196 +120,264 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
     Ok(camera_found)
 }
 
-pub fn show_result(ip_camera_url: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let window = "video capture";
-    highgui::named_window(window, highgui::WINDOW_AUTOSIZE)?;
+pub async fn camera_task(
+    camera_info: &CameraInfo,
+    frame_sender: mpsc::Sender<FrameData>,
+    mut stop_receiver: broadcast::Receiver<()>,
+) -> Result<(), Box<dyn std::error::Error + Send>> {
+    println!("Camera info {:?}", camera_info);
 
-    let mut cap = match ip_camera_url.is_empty() {
-        true => videoio::VideoCapture::new(0, videoio::CAP_ANY)?,
-        _ => videoio::VideoCapture::from_file(ip_camera_url, videoio::CAP_FFMPEG)?,
+    let mut camera = match CameraSettings::new(camera_info.url.to_string()) {
+        Ok(cam) => cam,
+        Err(e) => {
+            log::error!(
+                "Failed to initialize camera {}:, error: {}",
+                camera_info.url,
+                e
+            );
+            return Err(e);
+        }
     };
 
-    if !cap.is_opened()? {
-        panic!("Unable to open default camera!");
+    loop {
+        if stop_receiver.try_recv().is_ok() {
+            println!("Stop all camera tasks");
+            break;
+        }
+
+        // Capture frame
+        match camera.get_frame() {
+            Ok(frame_data) => {
+                // Send frame to processing channel
+                if let Err(e) = frame_sender.send(frame_data).await {
+                    warn!(
+                        "Failed to send frame from: {}, error: {}",
+                        camera.ip_camera_url, e
+                    );
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "Error capturing frame from: {}, error: {}",
+                    camera.ip_camera_url,
+                    e
+                );
+                return Err(Box::new(e));
+            }
+        }
+
+        // Small delay to prevent busy looping
+        tokio::task::yield_now().await;
     }
 
-    println!("Frame width: {}", cap.get(CAP_PROP_FRAME_WIDTH)?.round());
-    println!("Frame height: {}", cap.get(CAP_PROP_FRAME_HEIGHT)?.round());
+    Ok(())
+}
 
-    let fps = cap.get(CAP_PROP_FPS)?;
-    println!("FPS: {}", fps);
-    let delay = (1000. / fps).round();
-    println!("Delay: {}", delay);
+pub async fn use_farme(
+    mut frame_receiver: mpsc::Receiver<FrameData>,
+    mut stop_receiver: broadcast::Receiver<()>,
+) -> opencv::Result<()> {
+    let root = get_project_root();
 
     let mut bg_subtractor: opencv::core::Ptr<opencv::video::BackgroundSubtractorMOG2> =
-        create_background_subtractor_mog2(500, 16.0, true)?; // MOG2 subtractor
+        create_background_subtractor_mog2(1000, 16.0, true).unwrap(); // MOG2 subtractor
 
     // Create MOG2 background subtractor
-    bg_subtractor.set_detect_shadows(false)?; // Faster, less noisy (set true if you need shadow detection)
+    bg_subtractor.set_detect_shadows(false).unwrap(); // Faster, less noisy (set true if you need shadow detection)
 
     //morph operations
     let kernel = get_structuring_element(
         MORPH_ELLIPSE,
-        opencv::core::Size::new(5, 5),
+        opencv::core::Size::new(7, 7),
         opencv::core::Point::new(-1, -1),
     )?;
 
-    let mut frame = Mat::default();
     let mut fg_mask = Mat::default(); // Foreground mask (motion result)
     let mut contours = Vector::<Vector<opencv::core::Point>>::new();
     let mut fg_mask_clean = Mat::default();
 
-    let root = get_project_root();
-
     loop {
-        // Retrieve the next frame from the camera or video file and store it in the `frame` variable
-        cap.read(&mut frame)?;
-
-        if frame.empty() {
-            println!("No frame captured");
+        if stop_receiver.try_recv().is_ok() {
+            println!("Stop all use frame tasks");
             break;
         }
 
-        // Apply background subtractor
-        opencv::prelude::BackgroundSubtractorMOG2Trait::apply(
-            &mut bg_subtractor,
-            &frame,
-            &mut fg_mask,
-            -1.0,
-        )?; // -1.0 uses default learning rate
+        let frame_data = frame_receiver.recv().await;
 
-        morphology_ex(
-            &fg_mask,
-            &mut fg_mask_clean,
-            MORPH_CLOSE,
-            &kernel,
-            opencv::core::Point::new(-1, -1),
-            1,
-            0,
-            Scalar::all(0.0),
-        )?;
+        match frame_data {
+            Some(frame_data) => {
+                let mut display = frame_data.frame.clone();
 
-        // Find contours in the foreground mask
-        find_contours(
-            &fg_mask_clean,
-            &mut contours,
-            // &mut hierarchy,
-            RetrievalModes::RETR_EXTERNAL.into(), // Example retrieval mode
-            ContourApproximationModes::CHAIN_APPROX_SIMPLE.into(), // Example approximation method
-            Point::new(0, 0),                     // Offset
-        )?;
+                // Apply background subtractor
+                //bg_subtractor.apply(&frame_data.frame, &mut fg_mask, -1.0);
+                opencv::prelude::BackgroundSubtractorMOG2Trait::apply(
+                    &mut bg_subtractor,
+                    &frame_data.frame,
+                    &mut fg_mask,
+                    -1.0,
+                )
+                .expect("Apply background subtractor"); // -1.0 uses default learning rate
 
-        // Clone original frame to draw on
-        let mut display = frame.clone();
-
-        // Draw bounding boxes around significant motion
-        for contour in contours.iter() {
-            let area = contour_area(&contour, false)?;
-            if area > 2000.0 {
-                // Ignore small noise (adjust as needed)
-                let rect = bounding_rect(&contour)?;
-                rectangle(
-                    &mut display,
-                    rect,
-                    Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR
-                    2,
-                    LINE_8,
+                morphology_ex(
+                    &fg_mask,
+                    &mut fg_mask_clean,
+                    MORPH_CLOSE,
+                    &kernel,
+                    opencv::core::Point::new(-1, -1),
+                    1,
                     0,
+                    Scalar::all(0.0),
+                )
+                .expect("Advanced morph transformations");
+
+                // Find contours in the foreground mask
+                find_contours(
+                    &fg_mask_clean,
+                    &mut contours,
+                    // &mut hierarchy,
+                    RetrievalModes::RETR_EXTERNAL.into(), // Example retrieval mode
+                    ContourApproximationModes::CHAIN_APPROX_SIMPLE.into(), // Example approximation method
+                    Point::new(0, 0),                                      // Offset
                 )?;
+
+                // Draw bounding boxes around significant motion
+                for contour in contours.iter() {
+                    let area = contour_area(&contour, false).expect("Calculate area");
+                    let motion_pixels = count_non_zero(&fg_mask_clean).expect("Get moition pixel");
+                    //  println!("motion_pixels {}, area: {}", motion_pixels, area);
+                    // if area > 10_000.0 && area < 50_000.0 && motion_pixels > 75_000 {
+                    //if !mayby_human(&contour, frame_data.height)
+                    if area < 5_000.0 {
+                        continue;
+                    }
+                    let mut body_cascade = objdetect::CascadeClassifier::new(
+                        &root
+                            .join("model")
+                            .join("haarcascade_fullbody.xml")
+                            .display()
+                            .to_string(),
+                    )
+                    .expect("Can not load model from Git OPENCV: haarcascade_fullbody.xml");
+                    // Ignore small noise (adjust as needed)
+                    let rect = bounding_rect(&contour).expect("Calculate bounding rect");
+                    rectangle(
+                        &mut display,
+                        rect,
+                        Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR
+                        2,
+                        LINE_8,
+                        0,
+                    )?;
+
+                    let motion_rect = bounding_rect(&contour)?;
+
+                    // Extract ROI (region of motion)
+                    let roi = Mat::roi(&frame_data.frame, motion_rect)?;
+
+                    // Convert ROI to grayscale (Haar requires grayscale)
+                    let mut roi_gray = Mat::default();
+                    cvt_color(&roi, &mut roi_gray, COLOR_BGR2GRAY, 0)?;
+
+                    // Run Haar Cascade on ROI
+                    let mut bodies = Vector::<Rect>::new();
+                    body_cascade.detect_multi_scale(
+                        &roi_gray,
+                        &mut bodies,
+                        1.1,                // scale_factor
+                        10,                 // min_neighbors
+                        0,                  // flags (use default)
+                        Size::new(60, 120), // min_size (adjust based on your scene)
+                        Size::new(0, 0),    // max_size (0 = no limit)
+                    )?;
+
+                    // Draw result
+                    if !bodies.is_empty() {
+                        println!("motion_pixels {}, area: {}", motion_pixels, area);
+
+                        let filename = format!("motion-{}.jpg", frame_data.id);
+                        let folder =
+                            std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
+                        let path = root.join(folder).join(filename);
+                        println!("{:?}", path);
+
+                        //save image
+                        opencv::imgcodecs::imwrite(
+                            &path.display().to_string(),
+                            &display,
+                            &Vector::new(),
+                        )?;
+                    }
+                }
+
+                //load model from Git OPENCV
+                let mut face_cascade = objdetect::CascadeClassifier::new(
+                    &root
+                        .join("model")
+                        .join("haarcascade_frontalface_default.xml")
+                        .display()
+                        .to_string(),
+                )
+                .expect("Can not load model from Git OPENCV: haarcascade_frontalface_default.xml");
+
+                let mut gray = Mat::default();
+                opencv::imgproc::cvt_color(
+                    &frame_data.frame,
+                    &mut gray,
+                    opencv::imgproc::COLOR_BGR2GRAY,
+                    0,
+                )
+                .expect("Can not convert original image to gray color");
+                //find face
+                let mut faces = Vector::<Rect>::new();
+                face_cascade
+                    .detect_multi_scale(
+                        &gray,
+                        &mut faces,
+                        1.1,
+                        40, //чем выше тем меньше ложных срабаотываний
+                        CASCADE_SCALE_IMAGE,
+                        Size::new(30, 30),
+                        Size::new(0, 0),
+                    )
+                    .expect("Can not detect difference between images: detect face");
+
+                //draw red rectangle
+                for face in faces.iter() {
+                    imgproc::rectangle(
+                        &mut display,
+                        face,
+                        Scalar::new(0.0, 0.0, 255.0, 0.0), //B G R A
+                        2,                                 // thickness
+                        imgproc::LINE_8,
+                        0,
+                    )?;
+                }
+
+                if !faces.is_empty() {
+                    // log::info!("Face count: {}", faces.len());
+                    let output_path = &root
+                        .join("motion")
+                        .join(format!("face-{}.jpg", frame_data.id))
+                        .display()
+                        .to_string();
+                    imgcodecs::imwrite(output_path, &display, &Vector::new()).unwrap();
+                    //     println!("Saved output to {}", output_path);
+                    println!("Found {} faces", faces.len());
+                }
+            }
+            None => {
+                warn!("Frame channel closed");
+                break;
             }
         }
-
-        let motion_pixels = count_non_zero(&fg_mask_clean)?;
-        //10_000 move hand detect
-        //25_000 move body
-        //50_000 5 meters body move
-        //75_000 standart/default
-        if motion_pixels > 50_000 && motion_pixels < 100_000 {
-            // e.g., more than 500 white pixels //50_000
-            println!("Motion detected! Pixels: {}", motion_pixels);
-            // Trigger alert, save frame, etc.
-            let now: DateTime<Local> = Local::now();
-
-            // Format the datetime into a string suitable for a filename
-            // We replace colons with hyphens as colons are not allowed in filenames on some systems
-            let filename_datetime = now.format("%Y-%m-%d_%H-%M-%S").to_string();
-            let filename = format!("motion_{}.jpg", filename_datetime);
-            let folder = std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
-            let path = root.join(folder).join(filename);
-            println!("{:?}", path);
-
-            //save image
-            opencv::imgcodecs::imwrite(&path.display().to_string(), &frame, &Vector::new())?;
-        }
-
-        //DETECT FACE  use haarcascade_frontalface_default.xml
-        //load model from Git OPENCV
-        let mut face_cascade = objdetect::CascadeClassifier::new(
-            &root
-                .join("model")
-                .join("haarcascade_frontalface_default.xml")
-                .display()
-                .to_string(),
-        )?;
-
-        let mut gray = Mat::default();
-        opencv::imgproc::cvt_color(&frame, &mut gray, opencv::imgproc::COLOR_BGR2GRAY, 0)?;
-        //find face
-        let mut faces = Vector::<Rect>::new();
-        face_cascade.detect_multi_scale(
-            &gray,
-            &mut faces,
-            1.1,
-            3,
-            CASCADE_SCALE_IMAGE,
-            Size::new(30, 30),
-            Size::new(0, 0),
-        )?;
-
-        //draw red rectangle
-        for face in faces.iter() {
-            imgproc::rectangle(
-                &mut display,
-                face,
-                Scalar::new(0.0, 0.0, 255.0, 0.0), //B G R A
-                2,                                 // thickness
-                imgproc::LINE_8,
-                0,
-            )?;
-        }
-
-        if !faces.is_empty() {
-            log::info!("Face count: {}", faces.len());
-            //     let output_path = &root
-            //         .join("motion")
-            //         .join("face.jpg")
-            //         .display()
-            //         .to_string();
-            //     imgcodecs::imwrite(output_path, &gray, &Vector::new())?;
-            //     println!("Saved output to {}", output_path);
-            println!("Found {} faces", faces.len());
-        }
-
-        // Show results
-        // highgui::imshow("Original", &frame)?;
-        // highgui::imshow("MOG2 Motion Mask", &fg_mask)?;
-        // highgui::imshow("Cleaned Motion Mask", &fg_mask_clean)?;
-        // highgui::imshow("Motion Detection", &display)?;
-        highgui::imshow("Face Detection/Motion Detection", &display)?;
-
-        // If the key pressed is 27, exit the while loop
-        if wait_key(10_i32)? == 27 {
-            break;
-        }
     }
-    // Close all windows
-    highgui::destroy_all_windows()?;
+
     Ok(())
 }
 
 fn get_project_root() -> PathBuf {
     std::env::current_dir()
-        .ok()
         .expect("Project folder not found")
 }
 

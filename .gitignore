@@ -1,6 +1,7 @@
 /target
 /model
 /motion
+/src/experiments
 
 *.txt
 *.xml
