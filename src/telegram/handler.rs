@@ -1,6 +1,6 @@
 // use crate::locales::messages::Messages;
 use crate::{
-    CAMERAS, STOP_SENDER, device::{CameraInfo, camera::find_onvif_camera, message::Messages}, start_cameras
+    CAMERAS, STOP_SENDER, device::{CameraInfo, camera::find_onvif_camera, message::Messages}, start_worker
 };
 use teloxide::{
     prelude::*,
@@ -35,7 +35,7 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
                     )
                     .await?;
 
-                    let _ = start_cameras().await;
+                    tokio::spawn(start_worker());
                 }
                 Err(e) => {
                     log::error!("Error when find devices: {}", e);
@@ -46,11 +46,11 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
             return Ok(());
         }
 
-        if text == "/stop_record" {
+        if text == "/stop" {
             println!("{}", text);
             let _ = STOP_SENDER.send(());
 
-            bot.send_message(chat_id, &messages.stop_record).await?;
+            bot.send_message(chat_id, &messages.stop).await?;
 
             return Ok(());
         }

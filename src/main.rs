@@ -87,18 +87,18 @@ pub async fn clients_callback(req: HttpRequest, body: web::Bytes) -> impl Respon
     HttpResponse::Ok().body("ok")
 }
 
-pub async fn start_cameras() -> Result<(), Box<dyn std::error::Error>> {
+pub async fn start_worker() -> Result<(), Box<dyn std::error::Error + Send>> {
     let mut res: Vec<CameraInfo> = {
         let cameras = CAMERAS.read().await;
         cameras.clone()
     };
 
     if res.is_empty() {
-        res = device::camera::find_onvif_camera().await.unwrap();
-        {
-            let writer = CAMERAS.write(); // Exclusive access
-            writer.await.clear();
-        }
+        // res = device::camera::find_onvif_camera().await.unwrap();
+        // {
+        //     let writer = CAMERAS.write(); // Exclusive access
+        //     writer.await.clear();
+        // }
 
         if res.is_empty() {
             //web cam
@@ -118,7 +118,7 @@ pub async fn start_cameras() -> Result<(), Box<dyn std::error::Error>> {
     println!("{:?}", res);
 
     //let (stop_sender, _) = broadcast::channel::<()>(1);
-    let stop_sender_clone = STOP_SENDER.clone();// stop_sender.clone();
+    // let stop_sender_clone = STOP_SENDER.clone();// stop_sender.clone();
 
     let (frame_sender, frame_receiver) = mpsc::channel::<FrameData>(100);
     let mut camera_handles = Vec::new();
