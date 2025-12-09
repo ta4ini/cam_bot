@@ -7,7 +7,8 @@ pub struct Messages {
     pub error: String,
     pub status: String,
     pub is_device: String,
-    pub stop: String
+    pub stop: String,
+    pub search: String,
 }
 
 impl Default for Messages {
@@ -20,7 +21,7 @@ impl Default for Messages {
 • `/start` Запуск\.
 • `/find` Найти устройства и запустить обработку изображений\.
 • `/help` Помощь\.
-• `/status` Сатус камер, получить изображение\.
+• `/status` Кмеры активны\, получить изображение\.
 • `/stop` Остановить обработку изображений\.
 "#
             .to_string(),
@@ -30,6 +31,7 @@ impl Default for Messages {
             error: "Ошибка.".into(),
             stop: "Камеры прекратили запись".into(),
             status: "Статус камер.".into(),
+            search: "Поиск камер...".into(),
         }
     }
 }

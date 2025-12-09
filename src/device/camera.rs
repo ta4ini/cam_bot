@@ -20,7 +20,7 @@ use tokio::{
 use uuid::Uuid;
 use xml::reader::{EventReader, XmlEvent};
 
-use crate::{STOP_SENDER, device::{CameraInfo, CameraSettings, FrameData}};
+use crate::device::{CameraInfo, CameraSettings, FrameData};
 
 const WS_DISCOVERY_IP_MULTICAST_ADDRESS: &str = "239.255.255.250:3702";
 const UDP_SOCKET_ADDR: &str = "0.0.0.0:0"; // let OS choose port
@@ -69,12 +69,12 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
             .send_to(msg_discover.as_ref(), WS_DISCOVERY_IP_MULTICAST_ADDRESS)
             .await?;
 
-        println!("Try send {:?}", success);
+        log::info!("Успех: {}", success);
+
         while try_recv < 5 {
             try_recv += 1;
             let mut buf = Vec::with_capacity(4096);
 
-            println!("Try listen");
             // Wait 1 sec for a response
             if let Ok(recv) = timeout(
                 Duration::from_millis(2000),
@@ -84,7 +84,7 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
             {
                 match recv {
                     Ok((size, addr)) => {
-                        println!("[OnvifClient][Discover] Received response from: {addr}");
+                        log::info!("[OnvifClient][Discover] Received response from: {addr}");
 
                         let buffer = BufReader::new(&buf[..size]);
                         let parser = EventReader::new(buffer);
@@ -93,7 +93,6 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
                             if let Ok(XmlEvent::Characters(c)) = xml
                                 && c.contains("NetworkVideoTransmitter")
                             {
-                                println!("{:?}", c);
                                 match camera_found.iter().find(|info| info.ip_addres == addr.ip()) {
                                     Some(res) => {
                                         println!("Camera exists{:?}", res.url);
@@ -106,12 +105,13 @@ pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::
                                         ),
                                         ip_addres: addr.ip(),
                                         port: addr.port(),
+                                        id: Uuid::new_v4().to_string()
                                     }),
                                 }
                             }
                         }
                     }
-                    Err(e) => eprintln!(" Error in response {e}"),
+                    Err(e) => log::error!(" Error in response {e}"),
                 }
             }
         }
@@ -127,7 +127,8 @@ pub async fn camera_task(
 ) -> Result<(), Box<dyn std::error::Error + Send>> {
     println!("Camera info {:?}", camera_info);
 
-    let mut camera = match CameraSettings::new(camera_info.url.to_string()) {
+    let mut camera = match CameraSettings::new(camera_info.url.to_string(), camera_info.id.clone())
+    {
         Ok(cam) => cam,
         Err(e) => {
             log::error!(
@@ -235,7 +236,6 @@ pub async fn use_farme(
                 find_contours(
                     &fg_mask_clean,
                     &mut contours,
-                    // &mut hierarchy,
                     RetrievalModes::RETR_EXTERNAL.into(), // Example retrieval mode
                     ContourApproximationModes::CHAIN_APPROX_SIMPLE.into(), // Example approximation method
                     Point::new(0, 0),                                      // Offset
@@ -247,7 +247,6 @@ pub async fn use_farme(
                     let motion_pixels = count_non_zero(&fg_mask_clean).expect("Get moition pixel");
                     //  println!("motion_pixels {}, area: {}", motion_pixels, area);
                     // if area > 10_000.0 && area < 50_000.0 && motion_pixels > 75_000 {
-                    //if !mayby_human(&contour, frame_data.height)
                     if area < 5_000.0 {
                         continue;
                     }
@@ -299,7 +298,6 @@ pub async fn use_farme(
                         let folder =
                             std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
                         let path = root.join(folder).join(filename);
-                        println!("{:?}", path);
 
                         //save image
                         opencv::imgcodecs::imwrite(
@@ -335,7 +333,7 @@ pub async fn use_farme(
                         &gray,
                         &mut faces,
                         1.1,
-                        40, //чем выше тем меньше ложных срабаотываний
+                        40, //чем выше тем меньше ложных срабатываний
                         CASCADE_SCALE_IMAGE,
                         Size::new(30, 30),
                         Size::new(0, 0),
@@ -355,15 +353,13 @@ pub async fn use_farme(
                 }
 
                 if !faces.is_empty() {
-                    // log::info!("Face count: {}", faces.len());
+                    log::info!("Face count: {}", faces.len());
                     let output_path = &root
                         .join("motion")
                         .join(format!("face-{}.jpg", frame_data.id))
                         .display()
                         .to_string();
                     imgcodecs::imwrite(output_path, &display, &Vector::new()).unwrap();
-                    //     println!("Saved output to {}", output_path);
-                    println!("Found {} faces", faces.len());
                 }
             }
             None => {
@@ -376,9 +372,8 @@ pub async fn use_farme(
     Ok(())
 }
 
-fn get_project_root() -> PathBuf {
-    std::env::current_dir()
-        .expect("Project folder not found")
+pub fn get_project_root() -> PathBuf {
+    std::env::current_dir().expect("Project folder not found")
 }
 
 //     use face_recognition::{FaceLandmarks, FaceRecognition};

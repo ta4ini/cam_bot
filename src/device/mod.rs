@@ -7,7 +7,6 @@ use opencv::{
         VideoCaptureTrait, VideoCaptureTraitConst as _,
     },
 };
-use uuid::Uuid;
 
 pub mod camera;
 pub mod message;
@@ -17,14 +16,16 @@ pub struct CameraInfo {
     pub url: String,
     pub ip_addres: IpAddr,
     pub port: u16,
+    pub id: String,
 }
 
 impl CameraInfo {
-    pub fn new(url: String, ip_addres: IpAddr, port: u16) -> Self {
+    pub fn new(url: String, ip_addres: IpAddr, port: u16, id: String) -> Self {
         CameraInfo {
             url,
             ip_addres,
             port,
+            id,
         }
     }
 }
@@ -43,7 +44,10 @@ pub struct CameraSettings {
 }
 
 impl CameraSettings {
-    pub fn new(ip_camera_url: String) -> opencv::Result<Self, Box<dyn std::error::Error + Send>> {
+    pub fn new(
+        ip_camera_url: String,
+        id: String,
+    ) -> opencv::Result<Self, Box<dyn std::error::Error + Send>> {
         println!("ip camera url {:?}", ip_camera_url);
         let cap = match ip_camera_url.is_empty() {
             true => videoio::VideoCapture::new(0, videoio::CAP_ANY),
@@ -72,7 +76,7 @@ impl CameraSettings {
         Ok(Self {
             ip_camera_url,
             cap,
-            id: Uuid::new_v4().to_string(),
+            id,
         })
     }
 

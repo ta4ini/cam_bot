@@ -20,15 +20,15 @@ use teloxide::{
 };
 use tokio::sync::mpsc;
 use tokio::sync::{RwLock, broadcast};
+use uuid::Uuid;
 
 pub static CAMERAS: LazyLock<Arc<RwLock<Vec<CameraInfo>>>> =
     LazyLock::new(|| Arc::new(RwLock::new(Vec::new())));
 
-pub static STOP_SENDER: LazyLock<broadcast::Sender<()>> =
-    LazyLock::new(|| {
-        let (stop_sender, _) = broadcast::channel::<()>(1);
-        stop_sender
-    });
+pub static STOP_SENDER: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| {
+    let (stop_sender, _) = broadcast::channel::<()>(1);
+    stop_sender
+});
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -106,6 +106,7 @@ pub async fn start_worker() -> Result<(), Box<dyn std::error::Error + Send>> {
                 url: "".to_string(),
                 ip_addres: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
                 port: 1,
+                id: Uuid::new_v4().to_string(),
             });
         }
 
