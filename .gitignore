@@ -7,3 +7,4 @@
 *.xml
 .env
 .DS_Store
+user.json

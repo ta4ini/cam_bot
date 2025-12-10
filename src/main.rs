@@ -149,11 +149,15 @@ pub async fn start_worker() -> Result<(), Box<dyn std::error::Error + Send>> {
     tokio::select! {
         _ = tokio::signal::ctrl_c() => {
             println!("Received Ctrl+C, shutting down...");
-            let _ = STOP_SENDER.send(()); //stop_sender.send(());
+            if let Err(e) = STOP_SENDER.send(()){
+                log::error!("Stop sender: {}",e);
+            }
         }
         _ = tokio::time::sleep(tokio::time::Duration::from_secs(360)) => {
             println!("Test duration complete, shutting down...");
-            let _ = STOP_SENDER.send(()); //stop_sender.send(());
+            if let Err(e) = STOP_SENDER.send(()){
+                log::error!("Stop sender: {}",e);
+            }
         }
     }
 
@@ -162,9 +166,6 @@ pub async fn start_worker() -> Result<(), Box<dyn std::error::Error + Send>> {
     }
 
     let _ = frame_handle.await;
-
-    // Send stop to all tasks
-    // let _ = stop_sender.send(());
 
     Ok(())
 }

@@ -1,4 +1,4 @@
-use std::{fs, ops::Index};
+use std::{ops::Index, path::Path};
 
 // use crate::locales::messages::Messages;
 use crate::{
@@ -10,9 +10,15 @@ use crate::{
     },
     start_worker,
 };
+use serde::{Deserialize, Serialize};
 use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
+};
+use tokio::io::BufReader;
+use tokio::{
+    fs::{self, File},
+    io::AsyncReadExt,
 };
 
 pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
@@ -21,6 +27,10 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
     // println!("{:?}", msg);
     if let Some(text) = msg.text() {
         if text == "/start" {
+            if let Err(e) = write_to_file(msg).await {
+                log::error!("Can't write user to file: {}", e);
+            }
+
             bot.send_message(chat_id, &messages.welcome).await?;
 
             return Ok(());
@@ -60,7 +70,9 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
 
         if text == "/stop" {
             println!("{}", text);
-            let _ = STOP_SENDER.send(());
+            if let Err(e) = STOP_SENDER.send(()) {
+                log::error!("Stop sender: {}", e);
+            }
 
             bot.send_message(chat_id, &messages.stop).await?;
 
@@ -157,22 +169,66 @@ pub async fn handle_callback(bot: Bot, q: CallbackQuery) -> ResponseResult<()> {
                             .display()
                             .to_string();
 
-                        if fs::metadata(&path).is_err() {
-                            continue;
+                        match fs::metadata(&path).await {
+                            Ok(metadata) => {
+                                if metadata.is_file() {
+                                    bot.send_photo(chat_id, InputFile::file(path))
+                                        .caption(format!(
+                                            "Изображение с камеры: {}",
+                                            camera_info_items.index(index).id
+                                        ))
+                                        .await?;
+                                } else {
+                                    bot.send_message(chat_id, "Изображений нет").await?;
+                                }
+                            }
+                            _ => continue,
                         }
-
-                        bot.send_photo(chat_id, InputFile::file(path))
-                            .caption(format!(
-                                "Изображение с камеры: {}",
-                                camera_info_items.index(index).id
-                            ))
-                            .await?;
                     }
                 }
                 Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
             }
         }
     }
+
+    Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct User {
+    chat_id: i64,
+}
+
+async fn write_to_file(msg: Message) -> Result<(), Box<dyn std::error::Error>> {
+    let path = get_project_root()
+        .join("files")
+        .join("user.json")
+        .display()
+        .to_string();
+
+    if !Path::new(&path).exists() {
+        let _ = File::create(&path).await?;
+    }
+
+    let file = File::open(&path).await.expect("Unable open user.json");
+    let mut reader = BufReader::new(file);
+
+    let mut buffer = String::new();
+    reader.read_to_string(&mut buffer).await?;
+
+    let mut user: Vec<User> = if buffer.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_str(&buffer).expect("Error reading user.json")
+    };
+
+    let chat_id = msg.chat.id.0;
+    if user.is_empty() || !user.iter().any(|u| u.chat_id == chat_id) {
+        user.push(User { chat_id });
+    }
+
+    let json_string = serde_json::to_string(&user).unwrap();
+    fs::write(path, json_string.as_bytes()).await?;
 
     Ok(())
 }
