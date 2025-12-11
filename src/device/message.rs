@@ -9,6 +9,7 @@ pub struct Messages {
     pub is_device: String,
     pub stop: String,
     pub search: String,
+    pub access_denied: String,
 }
 
 impl Default for Messages {
@@ -32,6 +33,7 @@ impl Default for Messages {
             stop: "Камеры прекратили запись".into(),
             status: "Статус камер.".into(),
             search: "Поиск камер...".into(),
+            access_denied: "Доступ запрещен".into(),
         }
     }
 }

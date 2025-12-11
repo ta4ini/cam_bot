@@ -1,6 +1,3 @@
-use std::{ops::Index, path::Path};
-
-// use crate::locales::messages::Messages;
 use crate::{
     CAMERAS, STOP_SENDER,
     device::{
@@ -9,27 +6,43 @@ use crate::{
         message::Messages,
     },
     start_worker,
+    telegram::user::Users,
 };
-use serde::{Deserialize, Serialize};
+use std::ops::Index;
 use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
 };
-use tokio::io::BufReader;
-use tokio::{
-    fs::{self, File},
-    io::AsyncReadExt,
-};
+use tokio::fs::{self};
 
 pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
+
     let messages = Messages::default();
-    // println!("{:?}", msg);
+
     if let Some(text) = msg.text() {
         if text == "/start" {
-            if let Err(e) = write_to_file(msg).await {
-                log::error!("Can't write user to file: {}", e);
-            }
+            let path = get_project_root()
+                .join("files")
+                .join("user.json")
+                .display()
+                .to_string();
+            let users = Users::new(path);
+
+            let username = match msg.chat.username() {
+                Some(s) => s.to_string(),
+                None => String::from("no name"),
+            };
+
+            users
+                .read_from_file()
+                .await
+                .add_id(chat_id.0, username)
+                .write_to_file()
+                .await;
+            // if let Err(e) = write_to_file(msg).await {
+            //     log::error!("Can't write user to file: {}", e);
+            // }
 
             bot.send_message(chat_id, &messages.welcome).await?;
 
@@ -45,6 +58,11 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/find" {
+            if !is_active(chat_id.0).await {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
             bot.send_message(chat_id, &messages.search).await?;
 
             match find_onvif_camera().await {
@@ -69,7 +87,11 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/stop" {
-            println!("{}", text);
+            if !is_active(chat_id.0).await {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
             if let Err(e) = STOP_SENDER.send(()) {
                 log::error!("Stop sender: {}", e);
             }
@@ -80,6 +102,11 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/status" {
+            if !is_active(chat_id.0).await {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
             let camera_info_items: Vec<CameraInfo> = {
                 let cameras = CAMERAS.read().await;
                 cameras.clone()
@@ -125,6 +152,36 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
             bot.send_message(chat_id, "Выбрать камеру и загрузить изображение:")
                 .reply_markup(InlineKeyboardMarkup::new(inline_keyboard))
                 .await?;
+
+            return Ok(());
+        }
+
+        if text == "/access" {
+            let path = get_project_root()
+                .join("files")
+                .join("user.json")
+                .display()
+                .to_string();
+            let users = Users::new(path);
+            let users = users.clone().read_from_file().await;
+            let (is_active, is_admin) = users.is_access(chat_id.0);
+
+            if is_active && is_admin {
+                let mut buttons = vec![];
+                for u in users.all_users() {
+                    if u.is_admin {
+                        continue;
+                    }
+                    buttons.push(InlineKeyboardButton::callback(
+                        format!("{} {} {}", u.chat_id, u.username, u.is_active),
+                        format!("user_{}|{}", u.chat_id, u.is_active),
+                    ));
+                }
+
+                bot.send_message(chat_id, "Участники:")
+                    .reply_markup(InlineKeyboardMarkup::new(vec![buttons]))
+                    .await?;
+            }
 
             return Ok(());
         }
@@ -194,41 +251,13 @@ pub async fn handle_callback(bot: Bot, q: CallbackQuery) -> ResponseResult<()> {
     Ok(())
 }
 
-#[derive(Serialize, Deserialize, Debug)]
-struct User {
-    chat_id: i64,
-}
-
-async fn write_to_file(msg: Message) -> Result<(), Box<dyn std::error::Error>> {
+async fn is_active(chat_id: i64) -> bool {
     let path = get_project_root()
         .join("files")
         .join("user.json")
         .display()
         .to_string();
-
-    if !Path::new(&path).exists() {
-        let _ = File::create(&path).await?;
-    }
-
-    let file = File::open(&path).await.expect("Unable open user.json");
-    let mut reader = BufReader::new(file);
-
-    let mut buffer = String::new();
-    reader.read_to_string(&mut buffer).await?;
-
-    let mut user: Vec<User> = if buffer.is_empty() {
-        Vec::new()
-    } else {
-        serde_json::from_str(&buffer).expect("Error reading user.json")
-    };
-
-    let chat_id = msg.chat.id.0;
-    if user.is_empty() || !user.iter().any(|u| u.chat_id == chat_id) {
-        user.push(User { chat_id });
-    }
-
-    let json_string = serde_json::to_string(&user).unwrap();
-    fs::write(path, json_string.as_bytes()).await?;
-
-    Ok(())
+    let users = Users::new(path);
+    let (is_active, _) = users.read_from_file().await.is_access(chat_id);
+    is_active
 }
