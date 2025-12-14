@@ -30,8 +30,8 @@ impl User {
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Users {
-    users: Vec<User>,
-    path: String,
+    pub users: Vec<User>,
+    pub path: String,
 }
 
 impl Users {
@@ -46,11 +46,11 @@ impl Users {
         self.users.push(User::new(chat_id, username));
     }
 
-    pub fn activate_deactivate(&mut self, chat_id: i64, is_active: bool) {
+    pub fn activate_deactivate(&mut self, chat_id: i64) {
         if !self.is_empty() {
             for user in self.users.iter_mut() {
                 if user.chat_id == chat_id {
-                    user.is_active = is_active;
+                    user.is_active = !user.is_active;
                     break;
                 }
             }
@@ -78,7 +78,7 @@ impl Users {
         }
     }
 
-    pub async fn read_from_file(mut self) -> Self {
+    pub async fn read_from_file(&mut self) {
         if !Path::new(&self.path).exists() {
             let _ = File::create(&self.path).await;
         }
@@ -98,16 +98,12 @@ impl Users {
             }
             // self.push(serde_json::from_str(&buffer).expect("Error reading user.json");
         }
-
-        self
     }
 
-    pub fn add_id(mut self, chat_id: i64, username: String) -> Self {
+    pub fn add_id(&mut self, chat_id: i64, username: String) {
         if !self.users.iter().any(|u| u.chat_id == chat_id) {
             self.push(chat_id, username);
         }
-
-        self
     }
 
     pub async fn write_to_file(&self) {

@@ -1,12 +1,11 @@
 use crate::{
-    CAMERAS, STOP_SENDER,
+    ArcRwLockUsers, CAMERAS, STOP_SENDER,
     device::{
         CameraInfo,
         camera::{find_onvif_camera, get_project_root},
         message::Messages,
     },
     start_worker,
-    telegram::user::Users,
 };
 use std::ops::Index;
 use teloxide::{
@@ -15,31 +14,33 @@ use teloxide::{
 };
 use tokio::fs::{self};
 
-pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
+pub async fn handle_message(
+    bot: Bot,
+    msg: Message,
+    users_ar: ArcRwLockUsers,
+) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
 
     let messages = Messages::default();
 
+    let is_active = {
+        let (is_active, _) = users_ar.read().await.is_access(chat_id.0);
+        is_active
+    };
+
     if let Some(text) = msg.text() {
         if text == "/start" {
-            let path = get_project_root()
-                .join("files")
-                .join("user.json")
-                .display()
-                .to_string();
-            let users = Users::new(path);
-
             let username = match msg.chat.username() {
                 Some(s) => s.to_string(),
                 None => String::from("no name"),
             };
 
-            users
-                .read_from_file()
-                .await
-                .add_id(chat_id.0, username)
-                .write_to_file()
-                .await;
+            {
+                let mut users = users_ar.write().await;
+                users.read_from_file().await;
+                users.add_id(chat_id.0, username);
+                users.write_to_file().await;
+            }
             // if let Err(e) = write_to_file(msg).await {
             //     log::error!("Can't write user to file: {}", e);
             // }
@@ -58,7 +59,7 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/find" {
-            if !is_active(chat_id.0).await {
+            if !is_active {
                 bot.send_message(chat_id, &messages.access_denied).await?;
                 return Ok(());
             }
@@ -66,9 +67,13 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
             bot.send_message(chat_id, &messages.search).await?;
 
             match find_onvif_camera().await {
-                Ok(devices) => {
+                Ok(mut devices) => {
                     let text = if !devices.is_empty() {
-                        format!("{}: {} ед.", &messages.is_device, devices.len())
+                        let cnt = devices.len();
+                        println!("{}", cnt);
+                        let cameras = CAMERAS.write();
+                        cameras.await.append(&mut devices);
+                        format!("{}: {} ед.", &messages.is_device, cnt)
                     } else {
                         "Камер нет, пробуем подключиться к локальной".to_string()
                     };
@@ -87,7 +92,7 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/stop" {
-            if !is_active(chat_id.0).await {
+            if !is_active {
                 bot.send_message(chat_id, &messages.access_denied).await?;
                 return Ok(());
             }
@@ -102,7 +107,7 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/status" {
-            if !is_active(chat_id.0).await {
+            if !is_active {
                 bot.send_message(chat_id, &messages.access_denied).await?;
                 return Ok(());
             }
@@ -157,24 +162,20 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/access" {
-            let path = get_project_root()
-                .join("files")
-                .join("user.json")
-                .display()
-                .to_string();
-            let users = Users::new(path);
-            let users = users.clone().read_from_file().await;
-            let (is_active, is_admin) = users.is_access(chat_id.0);
+            let users = users_ar.read().await;
+            let (is_active, is_admin) = &users.is_access(chat_id.0);
 
-            if is_active && is_admin {
+            if *is_active && *is_admin {
                 let mut buttons = vec![];
                 for u in users.all_users() {
                     if u.is_admin {
                         continue;
                     }
+
+                    let active = if u.is_active { "✅" } else { "❌" };
                     buttons.push(InlineKeyboardButton::callback(
-                        format!("{} {} {}", u.chat_id, u.username, u.is_active),
-                        format!("user_{}|{}", u.chat_id, u.is_active),
+                        format!("{} {} {}", u.chat_id, u.username, active),
+                        format!("user_{}", u.chat_id),
                     ));
                 }
 
@@ -192,8 +193,11 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
     Ok(())
 }
 
-pub async fn handle_callback(bot: Bot, q: CallbackQuery) -> ResponseResult<()> {
-    // println!("{:?}", q);
+pub async fn handle_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    users_ar: ArcRwLockUsers,
+) -> ResponseResult<()> {
 
     if let Some(data) = q.data.as_deref() {
         let messages = Messages::default();
@@ -246,18 +250,21 @@ pub async fn handle_callback(bot: Bot, q: CallbackQuery) -> ResponseResult<()> {
                 Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
             }
         }
+
+        if data.contains("user_") {
+            let info: Vec<&str> = data.split('_').collect();
+            match info[1].parse::<i64>() {
+                Ok(chat_id) => {
+                    let mut users = users_ar.write().await;
+                    users.activate_deactivate(chat_id);
+
+                    let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0));
+                    bot.send_message(chat_id, "Статус пользователя изменён").await?;
+                },
+                Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
+            }
+        }
     }
 
     Ok(())
-}
-
-async fn is_active(chat_id: i64) -> bool {
-    let path = get_project_root()
-        .join("files")
-        .join("user.json")
-        .display()
-        .to_string();
-    let users = Users::new(path);
-    let (is_active, _) = users.read_from_file().await.is_access(chat_id);
-    is_active
 }

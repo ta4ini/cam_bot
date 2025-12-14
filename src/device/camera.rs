@@ -245,7 +245,7 @@ pub async fn use_farme(
                 for contour in contours.iter() {
                     let area = contour_area(&contour, false).expect("Calculate area");
                     let motion_pixels = count_non_zero(&fg_mask_clean).expect("Get moition pixel");
-                    //  println!("motion_pixels {}, area: {}", motion_pixels, area);
+                    //println!("motion_pixels {}, area: {}", motion_pixels, area);
                     // if area > 10_000.0 && area < 50_000.0 && motion_pixels > 75_000 {
                     if area < 5_000.0 {
                         continue;
@@ -284,7 +284,7 @@ pub async fn use_farme(
                         &roi_gray,
                         &mut bodies,
                         1.1,                // scale_factor
-                        10,                 // min_neighbors
+                        3,                 // min_neighbors
                         0,                  // flags (use default)
                         Size::new(60, 120), // min_size (adjust based on your scene)
                         Size::new(0, 0),    // max_size (0 = no limit)

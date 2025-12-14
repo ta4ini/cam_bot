@@ -1,3 +1,4 @@
+use crate::device::camera::get_project_root;
 use crate::telegram::handler::{handle_callback, handle_message};
 mod device;
 mod telegram;
@@ -6,6 +7,7 @@ use crate::device::{
     CameraInfo, FrameData,
     camera::{camera_task, use_farme},
 };
+use crate::telegram::user::Users;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, post, web};
 use std::{
     net::{IpAddr, Ipv4Addr},
@@ -30,9 +32,10 @@ pub static STOP_SENDER: LazyLock<broadcast::Sender<()>> = LazyLock::new(|| {
     stop_sender
 });
 
+type ArcRwLockUsers = Arc<RwLock<Users>>;
+
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    //Result<(), Box<dyn std::error::Error>> {
     dotenvy::dotenv().ok();
     pretty_env_logger::init();
 
@@ -43,15 +46,27 @@ async fn main() -> std::io::Result<()> {
     let bot_token = std::env::var("TELOXIDE_TOKEN").expect("TELOXIDE_TOKEN must be set");
     let bot = Bot::new(bot_token);
 
+    let path = get_project_root()
+        .join("files")
+        .join("user.json")
+        .display()
+        .to_string();
+    let users: ArcRwLockUsers = Arc::new(RwLock::new(Users::new(path)));
+
     // Set up the dispatcher schema
+    let users_message = users.clone();
+    let users_callback_query = users.clone();
     let schema = dptree::entry()
         .branch(
-            Update::filter_message()
-                .endpoint(|bot: Bot, msg: Message| async move { handle_message(bot, msg).await }),
+            Update::filter_message().endpoint(move |bot: Bot, msg: Message| {
+                let users: ArcRwLockUsers = users_message.clone();
+                async move { handle_message(bot, msg, users).await }
+            }),
         )
         .branch(
-            Update::filter_callback_query().endpoint(|bot: Bot, q: CallbackQuery| async move {
-                handle_callback(bot, q).await
+            Update::filter_callback_query().endpoint(move |bot: Bot, q: CallbackQuery| {
+                let users: ArcRwLockUsers = users_callback_query.clone();
+                async move { handle_callback(bot, q, users).await }
             }),
         );
 
@@ -93,30 +108,20 @@ pub async fn start_worker() -> Result<(), Box<dyn std::error::Error + Send>> {
         cameras.clone()
     };
 
+    //ONLY FOR DEVELOPMENT AND DEBUG
     if res.is_empty() {
-        // res = device::camera::find_onvif_camera().await.unwrap();
-        // {
-        //     let writer = CAMERAS.write(); // Exclusive access
-        //     writer.await.clear();
-        // }
+        println!("CAMERAS ID EMPTY {:?}", res);
+        //web cam local
+        res.push(CameraInfo {
+            url: "".to_string(),
+            ip_addres: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            port: 1,
+            id: Uuid::new_v4().to_string(),
+        });
 
-        if res.is_empty() {
-            //web cam
-            res.push(CameraInfo {
-                url: "".to_string(),
-                ip_addres: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
-                port: 1,
-                id: Uuid::new_v4().to_string(),
-            });
-        }
-
-        {
-            let writer = CAMERAS.write(); // Exclusive access
-            writer.await.append(&mut res);
-        }
+        let writer = CAMERAS.write(); // Exclusive access
+        writer.await.append(&mut res);
     }
-
-    println!("{:?}", res);
 
     //let (stop_sender, _) = broadcast::channel::<()>(1);
     // let stop_sender_clone = STOP_SENDER.clone();// stop_sender.clone();
