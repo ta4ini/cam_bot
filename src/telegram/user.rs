@@ -57,11 +57,11 @@ impl Users {
         }
     }
 
-    pub fn remove(&mut self, chat_id: i64) {
-        if !self.is_empty() {
-            self.users.retain(|u| u.chat_id != chat_id)
-        }
-    }
+    // pub fn remove(&mut self, chat_id: i64) {
+    //     if !self.is_empty() {
+    //         self.users.retain(|u| u.chat_id != chat_id)
+    //     }
+    // }
 
     fn is_empty(&self) -> bool {
         self.users.is_empty()

@@ -23,7 +23,7 @@ use xml::reader::{EventReader, XmlEvent};
 use crate::device::{CameraInfo, CameraSettings, FrameData};
 
 const WS_DISCOVERY_IP_MULTICAST_ADDRESS: &str = "239.255.255.250:3702";
-const UDP_SOCKET_ADDR: &str = "0.0.0.0:0"; // let OS choose port
+const UDP_SOCKET_ADDR: &str = "0.0.0.0:0";
 
 pub async fn find_onvif_camera() -> Result<Vec<CameraInfo>, Box<dyn std::error::Error + Send + Sync>>
 {
@@ -216,7 +216,7 @@ pub async fn use_farme(
                     &mut bg_subtractor,
                     &frame_data.frame,
                     &mut fg_mask,
-                    -1.0,
+                    0.3, //3.01 slow adaptive, artificles | 0.1 rapid | 0.5 - 0.1 good
                 )
                 .expect("Apply background subtractor"); // -1.0 uses default learning rate
 
@@ -250,6 +250,7 @@ pub async fn use_farme(
                     if area < 5_000.0 {
                         continue;
                     }
+
                     let mut body_cascade = objdetect::CascadeClassifier::new(
                         &root
                             .join("model")
@@ -283,11 +284,11 @@ pub async fn use_farme(
                     body_cascade.detect_multi_scale(
                         &roi_gray,
                         &mut bodies,
-                        1.1,                // scale_factor
-                        3,                 // min_neighbors
-                        0,                  // flags (use default)
-                        Size::new(60, 120), // min_size (adjust based on your scene)
-                        Size::new(0, 0),    // max_size (0 = no limit)
+                        1.1,               // scale_factor
+                        4,                 // min_neighbors
+                        0,                 // flags (use default)
+                        Size::new(50, 50), // min_size (adjust based on your scene) 60,60 30,30
+                        Size::new(0, 0),   // max_size (0 = no limit)
                     )?;
 
                     // Draw result

@@ -198,7 +198,6 @@ pub async fn handle_callback(
     q: CallbackQuery,
     users_ar: ArcRwLockUsers,
 ) -> ResponseResult<()> {
-
     if let Some(data) = q.data.as_deref() {
         let messages = Messages::default();
 
@@ -259,8 +258,9 @@ pub async fn handle_callback(
                     users.activate_deactivate(chat_id);
 
                     let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0));
-                    bot.send_message(chat_id, "Статус пользователя изменён").await?;
-                },
+                    bot.send_message(chat_id, "Статус пользователя изменён")
+                        .await?;
+                }
                 Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
             }
         }

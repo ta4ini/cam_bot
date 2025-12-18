@@ -1,6 +1,6 @@
 pub struct Messages {
     pub welcome: String,
-    pub help: String,
+    // pub help: String,
     pub help_detailed: String,
     pub unknown: String,
     pub no_device: String,
@@ -16,7 +16,7 @@ impl Default for Messages {
     fn default() -> Self {
         Messages {
             welcome: "Добро пожаловать!".into(),
-            help: "Помощь.".into(),
+            // help: "Помощь.".into(),
             help_detailed: r#"
 *Команды:*
 • `/start` Запуск\.

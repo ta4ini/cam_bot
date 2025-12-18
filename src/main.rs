@@ -86,19 +86,19 @@ async fn main() -> std::io::Result<()> {
 }
 
 //TODO: Use later
-async fn get_camera_info(index: usize) -> String {
-    let camera = CAMERAS.read().await;
-    if let Some(value) = camera.get(index) {
-        println!("{:?}", value);
-        return value.url.clone();
-    }
+// async fn get_camera_info(index: usize) -> String {
+//     let camera = CAMERAS.read().await;
+//     if let Some(value) = camera.get(index) {
+//         println!("{:?}", value);
+//         return value.url.clone();
+//     }
 
-    "".to_owned()
-}
+//     "".to_owned()
+// }
 
 //TODO: Create for clients
 #[post("/clients/callback")]
-pub async fn clients_callback(req: HttpRequest, body: web::Bytes) -> impl Responder {
+pub async fn clients_callback(_req: HttpRequest, _body: web::Bytes) -> impl Responder {
     HttpResponse::Ok().body("ok")
 }
 

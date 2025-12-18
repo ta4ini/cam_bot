@@ -33,7 +33,7 @@ impl CameraInfo {
 #[derive(Debug)]
 pub struct FrameData {
     frame: Mat,
-    timestamp: std::time::Instant,
+    // timestamp: std::time::Instant,
     id: String,
 }
 
@@ -95,7 +95,7 @@ impl CameraSettings {
 
         let frame_data = FrameData {
             frame,
-            timestamp: std::time::Instant::now(),
+            // timestamp: std::time::Instant::now(),
             id: self.id.to_string(),
         };
 
