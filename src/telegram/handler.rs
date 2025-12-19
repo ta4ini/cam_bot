@@ -7,7 +7,7 @@ use crate::{
     },
     start_worker,
 };
-use std::ops::Index;
+use std::{ops::Index, time::Duration};
 use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
@@ -102,6 +102,21 @@ pub async fn handle_message(
             }
 
             bot.send_message(chat_id, &messages.stop).await?;
+
+            return Ok(());
+        }
+
+        if text == "/restart" {
+            if !CAMERAS.read().await.is_empty() {
+                if STOP_SENDER.send(()).is_ok() {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+
+                tokio::spawn(start_worker());
+
+                bot.send_message(chat_id, "Службы были остановлены и запущены заново")
+                    .await?;
+            }
 
             return Ok(());
         }

@@ -22,7 +22,7 @@ OPENAI_API_KEY=your_openai_api_key
 | `/help`           | Show available commands              |
 | `/status`         | Show active devices                  |
 | `/stop`           | Stop recording                       |
-|-------------------|--------------------------------------|
+| `/restart`        | Restart.                             |
 
 ## Tech Stack
 
