@@ -2,6 +2,8 @@
 /model
 /motion
 /src/experiments
+/yolo/target
+/utils/target
 
 *.txt
 *.xml
