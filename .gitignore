@@ -1,12 +1,15 @@
-/target
+debug/
+target/
+Cargo.lock
+
+**/*.onnx
+
 /model
 /motion
 /src/experiments
-/yolo/target
 
 *.txt
 *.xml
-*.onnx
 .env
 .DS_Store
 user.json
