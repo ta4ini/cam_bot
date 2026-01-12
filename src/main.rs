@@ -1,4 +1,3 @@
-use crate::device::camera::get_project_root;
 use crate::telegram::handler::{handle_callback, handle_message};
 mod device;
 mod telegram;
@@ -9,6 +8,7 @@ use crate::device::{
 };
 use crate::telegram::user::Users;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, post, web};
+use utils::get_project_root;
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, LazyLock},

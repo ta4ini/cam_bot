@@ -2,7 +2,7 @@ use crate::{
     ArcRwLockUsers, CAMERAS, STOP_SENDER,
     device::{
         CameraInfo,
-        camera::{find_onvif_camera, get_project_root},
+        camera::{find_onvif_camera},
         message::Messages,
     },
     start_worker,
@@ -13,6 +13,7 @@ use teloxide::{
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
 };
 use tokio::fs::{self};
+use utils::get_project_root;
 
 pub async fn handle_message(
     bot: Bot,

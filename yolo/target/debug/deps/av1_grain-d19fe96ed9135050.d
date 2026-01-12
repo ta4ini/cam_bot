@@ -1,0 +1,11 @@
+/Users/sergeyb/dev/rust/otus/cam_bot/yolo/target/debug/deps/av1_grain-d19fe96ed9135050.d: /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/lib.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/create.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver/util.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/parse.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/util.rs
+
+/Users/sergeyb/dev/rust/otus/cam_bot/yolo/target/debug/deps/libav1_grain-d19fe96ed9135050.rmeta: /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/lib.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/create.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver/util.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/parse.rs /Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/util.rs
+
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/lib.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/create.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/diff/solver/util.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/parse.rs:
+/Users/sergeyb/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/av1-grain-0.2.5/src/util.rs:

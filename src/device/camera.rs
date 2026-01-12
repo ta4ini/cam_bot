@@ -1,17 +1,22 @@
+use image::{DynamicImage, RgbImage};
 use log::warn;
 use opencv::{
-    core::{Mat, Point, Rect, Scalar, Size, Vector, count_non_zero},
+    core::{AlgorithmHint, CV_8U, Mat, Point, Rect, Scalar, Size, Vector, count_non_zero},
     imgcodecs,
     imgproc::{
-        self, COLOR_BGR2GRAY, ContourApproximationModes, LINE_8, MORPH_CLOSE, MORPH_ELLIPSE,
-        RetrievalModes, bounding_rect, contour_area, cvt_color, find_contours,
-        get_structuring_element, morphology_ex, rectangle,
+        self, COLOR_BGR2RGB, ContourApproximationModes, MORPH_CLOSE,
+        MORPH_ELLIPSE, RetrievalModes, contour_area, cvt_color, find_contours,
+        get_structuring_element, morphology_ex,
     },
     objdetect::{self, CASCADE_SCALE_IMAGE},
     prelude::*,
     video::create_background_subtractor_mog2,
 };
-use std::{io::BufReader, path::PathBuf, time::Duration};
+use utils::get_project_root;
+use std::{
+    io::{BufReader, Read},
+    time::Duration,
+};
 use tokio::{
     net::UdpSocket,
     sync::{broadcast, mpsc},
@@ -19,6 +24,7 @@ use tokio::{
 };
 use uuid::Uuid;
 use xml::reader::{EventReader, XmlEvent};
+use yolo::find_object_by_yolo;
 
 use crate::device::{CameraInfo, CameraSettings, FrameData};
 
@@ -251,62 +257,106 @@ pub async fn use_farme(
                         continue;
                     }
 
-                    let mut body_cascade = objdetect::CascadeClassifier::new(
-                        &root
-                            .join("model")
-                            .join("haarcascade_fullbody.xml")
-                            .display()
-                            .to_string(),
-                    )
-                    .expect("Can not load model from Git OPENCV: haarcascade_fullbody.xml");
-                    // Ignore small noise (adjust as needed)
-                    let rect = bounding_rect(&contour).expect("Calculate bounding rect");
-                    rectangle(
-                        &mut display,
-                        rect,
-                        Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR
-                        2,
-                        LINE_8,
-                        0,
-                    )?;
+                    let bounding_boxes =
+                        find_object_by_yolo(mat_to_dynamic_image(&display).unwrap());
+                    // bounding_boxes Ok([BoundingBox { x1: 306.89105, y1: 271.7392, x2: 702.68005, y2: 447.72693 }])
+                    // FACE Rect_ { x: 505, y: 353, width: 320, height: 320 }
+                    match bounding_boxes {
+                        Ok(boxes) => {
+                            for body in boxes.iter() {
+                                imgproc::rectangle(
+                                    &mut display,
+                                    Rect {x: body.x1 as i32, y: body.y1 as i32,  width: body.x2 as i32, height: body.y2 as i32 },
+                                    Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR B G R A
+                                    2, // thickness
+                                    imgproc::LINE_8,
+                                    0,
+                                )?;
+                            }
 
-                    let motion_rect = bounding_rect(&contour)?;
+                            // Draw result
+                            if !boxes.is_empty() {
+                                println!("motion_pixels {}, area: {}", motion_pixels, area);
 
-                    // Extract ROI (region of motion)
-                    let roi = Mat::roi(&frame_data.frame, motion_rect)?;
+                                let filename = format!("motion-{}.jpg", frame_data.id);
+                                let folder =
+                                    std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
+                                let path = root.join(folder).join(filename);
 
-                    // Convert ROI to grayscale (Haar requires grayscale)
-                    let mut roi_gray = Mat::default();
-                    cvt_color(&roi, &mut roi_gray, COLOR_BGR2GRAY, 0)?;
+                                //save image
+                                opencv::imgcodecs::imwrite(
+                                    &path.display().to_string(),
+                                    &display,
+                                    &Vector::new(),
+                                )?;
+                            }
+                        },
+                        Err(err) => log::error!("Error {}", err)
+                    };
+                    
+                    //find human body by haar model
+                    // let mut body_cascade = objdetect::CascadeClassifier::new(
+                    //     &root
+                    //         .join("model")
+                    //         .join("haarcascade_fullbody.xml")
+                    //         .display()
+                    //         .to_string(),
+                    // )
+                    // .expect("Can not load model from Git OPENCV: haarcascade_fullbody.xml");
+                    // // Ignore small noise (adjust as needed)
+                    // let rect = bounding_rect(&contour).expect("Calculate bounding rect");
+                    // rectangle(
+                    //     &mut display,
+                    //     rect,
+                    //     Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR
+                    //     2,
+                    //     LINE_8,
+                    //     0,
+                    // )?;
 
-                    // Run Haar Cascade on ROI
-                    let mut bodies = Vector::<Rect>::new();
-                    body_cascade.detect_multi_scale(
-                        &roi_gray,
-                        &mut bodies,
-                        1.1,               // scale_factor
-                        4,                 // min_neighbors
-                        0,                 // flags (use default)
-                        Size::new(50, 50), // min_size (adjust based on your scene) 60,60 30,30
-                        Size::new(0, 0),   // max_size (0 = no limit)
-                    )?;
+                    // let motion_rect = bounding_rect(&contour)?;
 
-                    // Draw result
-                    if !bodies.is_empty() {
-                        println!("motion_pixels {}, area: {}", motion_pixels, area);
+                    // // Extract ROI (region of motion)
+                    // let roi = Mat::roi(&frame_data.frame, motion_rect)?;
 
-                        let filename = format!("motion-{}.jpg", frame_data.id);
-                        let folder =
-                            std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
-                        let path = root.join(folder).join(filename);
+                    // // Convert ROI to grayscale (Haar requires grayscale)
+                    // let mut roi_gray = Mat::default();
+                    // cvt_color(
+                    //     &roi,
+                    //     &mut roi_gray,
+                    //     COLOR_BGR2GRAY,
+                    //     0,
+                    //     AlgorithmHint::ALGO_HINT_DEFAULT,
+                    // )?;
 
-                        //save image
-                        opencv::imgcodecs::imwrite(
-                            &path.display().to_string(),
-                            &display,
-                            &Vector::new(),
-                        )?;
-                    }
+                    // // Run Haar Cascade on ROI
+                    // let mut bodies = Vector::<Rect>::new();
+                    // body_cascade.detect_multi_scale(
+                    //     &roi_gray,
+                    //     &mut bodies,
+                    //     1.1,               // scale_factor
+                    //     4,                 // min_neighbors
+                    //     0,                 // flags (use default)
+                    //     Size::new(50, 50), // min_size (adjust based on your scene) 60,60 30,30
+                    //     Size::new(0, 0),   // max_size (0 = no limit)
+                    // )?;
+
+                    // // Draw result
+                    // if !bodies.is_empty() {
+                    //     println!("motion_pixels {}, area: {}", motion_pixels, area);
+
+                    //     let filename = format!("motion-{}.jpg", frame_data.id);
+                    //     let folder =
+                    //         std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
+                    //     let path = root.join(folder).join(filename);
+
+                    //     //save image
+                    //     opencv::imgcodecs::imwrite(
+                    //         &path.display().to_string(),
+                    //         &display,
+                    //         &Vector::new(),
+                    //     )?;
+                    // }
                 }
 
                 //load model from Git OPENCV
@@ -325,6 +375,7 @@ pub async fn use_farme(
                     &mut gray,
                     opencv::imgproc::COLOR_BGR2GRAY,
                     0,
+                    AlgorithmHint::ALGO_HINT_DEFAULT,
                 )
                 .expect("Can not convert original image to gray color");
                 //find face
@@ -343,6 +394,7 @@ pub async fn use_farme(
 
                 //draw red rectangle
                 for face in faces.iter() {
+                    println!("FACE {:?}", face);
                     imgproc::rectangle(
                         &mut display,
                         face,
@@ -373,8 +425,68 @@ pub async fn use_farme(
     Ok(())
 }
 
-pub fn get_project_root() -> PathBuf {
-    std::env::current_dir().expect("Project folder not found")
+pub fn mat_to_dynamic_image(mat: &Mat) -> Result<DynamicImage, Box<dyn std::error::Error>> {
+    // let channel = mat.channels(); //channel 3
+    let depth = mat.depth();
+
+    // Only support 8-bit depth
+    if depth != CV_8U {
+        panic!("Only 8-bit images (CV_8U) are supported");
+    }
+
+    // println!("channels {}", channels);
+    let width = mat.cols();
+    let height = mat.rows();
+
+    let mut rgb_mat = Mat::default();
+    cvt_color(
+        mat,
+        &mut rgb_mat,
+        COLOR_BGR2RGB,
+        3,
+        AlgorithmHint::ALGO_HINT_DEFAULT,
+    )?;
+    //buffer for RGB image
+    let mut buffer = vec![0u8; (width * height * 3) as usize];
+    let mut byte_slice: &[u8] = rgb_mat.data_bytes().unwrap();
+    byte_slice.read_exact(&mut buffer).unwrap();
+    let rgb_img = RgbImage::from_raw(width as u32, height as u32, buffer).unwrap();
+
+    Ok(DynamicImage::ImageRgb8(rgb_img))
+    // match channels {
+    //     1 => {
+    //         // Grayscale → GrayImage
+    //         let mut buffer = vec![0u8; (width * height) as usize];
+    //         mat.data_bytes().read_exact(&mut buffer)?;
+    //         let gray_img = GrayImage::from_raw(width as u32, height as u32, buffer)
+    //             .ok_or_else(|| anyhow::anyhow!("Failed to create GrayImage"))?;
+    //         Ok(DynamicImage::ImageLuma8(gray_img))
+    //     }
+
+    //     3 => {
+    //         // BGR → RGB
+    //         let mut rgb_mat = Mat::default();
+    //         cvt_color(mat, &mut rgb_mat, COLOR_BGR2RGB, 3)?;
+    //         let mut buffer = vec![0u8; (width * height * 3) as usize];
+    //         rgb_mat.data_bytes().read_exact(&mut buffer)?;
+    //         let rgb_img = RgbImage::from_raw(width as u32, height as u32, buffer)
+    //             .ok_or_else(|| anyhow::anyhow!("Failed to create RgbImage"))?;
+    //         Ok(DynamicImage::ImageRgb8(rgb_img))
+    //     }
+
+    //     4 => {
+    //         // BGRA → RGBA
+    //         let mut rgba_mat = Mat::default();
+    //         cvt_color(mat, &mut rgba_mat, COLOR_BGR2RGBA, 4)?;
+    //         let mut buffer = vec![0u8; (width * height * 4) as usize];
+    //         rgba_mat.data_bytes().read_exact(&mut buffer)?;
+    //         let rgba_img = RgbaImage::from_raw(width as u32, height as u32, buffer)
+    //             .ok_or_else(|| anyhow::anyhow!("Failed to create RgbaImage"))?;
+    //         Ok(DynamicImage::ImageRgba8(rgba_img))
+    //     }
+
+    //     _ => anyhow::bail!("Unsupported channel count: {}", channels),
+    // }
 }
 
 //     use face_recognition::{FaceLandmarks, FaceRecognition};

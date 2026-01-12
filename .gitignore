@@ -5,6 +5,7 @@
 
 *.txt
 *.xml
+*.onnx
 .env
 .DS_Store
 user.json
