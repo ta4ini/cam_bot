@@ -1,7 +1,8 @@
+use chrono::Local;
 use image::{DynamicImage, RgbImage};
 use log::warn;
 use opencv::{
-    core::{AlgorithmHint, CV_8U, Mat, Point, Rect, Scalar, Size, Vector, count_non_zero},
+    core::{AlgorithmHint, CV_8U, Mat, Point, Rect, Scalar, Size, Vector},
     imgcodecs,
     imgproc::{
         self, COLOR_BGR2RGB, ContourApproximationModes, MORPH_CLOSE,
@@ -12,7 +13,7 @@ use opencv::{
     prelude::*,
     video::create_background_subtractor_mog2,
 };
-use utils::get_project_root;
+use utils::{create_dir, get_motion_folder_path, get_project_root};
 use std::{
     io::{BufReader, Read},
     time::Duration,
@@ -210,6 +211,9 @@ pub async fn use_farme(
             break;
         }
 
+        let folder_path = get_motion_folder_path();
+        create_dir(&folder_path.display().to_string()).unwrap();
+
         let frame_data = frame_receiver.recv().await;
 
         match frame_data {
@@ -250,7 +254,7 @@ pub async fn use_farme(
                 // Draw bounding boxes around significant motion
                 for contour in contours.iter() {
                     let area = contour_area(&contour, false).expect("Calculate area");
-                    let motion_pixels = count_non_zero(&fg_mask_clean).expect("Get moition pixel");
+                    // let motion_pixels = count_non_zero(&fg_mask_clean).expect("Get moition pixel");
                     //println!("motion_pixels {}, area: {}", motion_pixels, area);
                     // if area > 10_000.0 && area < 50_000.0 && motion_pixels > 75_000 {
                     if area < 5_000.0 {
@@ -276,16 +280,11 @@ pub async fn use_farme(
 
                             // Draw result
                             if !boxes.is_empty() {
-                                println!("motion_pixels {}, area: {}", motion_pixels, area);
-
-                                let filename = format!("motion-{}.jpg", frame_data.id);
-                                let folder =
-                                    std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
-                                let path = root.join(folder).join(filename);
-
+                                let filename = folder_path.join(format!("motion_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
+                                println!("filename {:?}", filename);
                                 //save image
                                 opencv::imgcodecs::imwrite(
-                                    &path.display().to_string(),
+                                    &filename,
                                     &display,
                                     &Vector::new(),
                                 )?;
@@ -293,70 +292,6 @@ pub async fn use_farme(
                         },
                         Err(err) => log::error!("Error {}", err)
                     };
-                    
-                    //find human body by haar model
-                    // let mut body_cascade = objdetect::CascadeClassifier::new(
-                    //     &root
-                    //         .join("model")
-                    //         .join("haarcascade_fullbody.xml")
-                    //         .display()
-                    //         .to_string(),
-                    // )
-                    // .expect("Can not load model from Git OPENCV: haarcascade_fullbody.xml");
-                    // // Ignore small noise (adjust as needed)
-                    // let rect = bounding_rect(&contour).expect("Calculate bounding rect");
-                    // rectangle(
-                    //     &mut display,
-                    //     rect,
-                    //     Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR
-                    //     2,
-                    //     LINE_8,
-                    //     0,
-                    // )?;
-
-                    // let motion_rect = bounding_rect(&contour)?;
-
-                    // // Extract ROI (region of motion)
-                    // let roi = Mat::roi(&frame_data.frame, motion_rect)?;
-
-                    // // Convert ROI to grayscale (Haar requires grayscale)
-                    // let mut roi_gray = Mat::default();
-                    // cvt_color(
-                    //     &roi,
-                    //     &mut roi_gray,
-                    //     COLOR_BGR2GRAY,
-                    //     0,
-                    //     AlgorithmHint::ALGO_HINT_DEFAULT,
-                    // )?;
-
-                    // // Run Haar Cascade on ROI
-                    // let mut bodies = Vector::<Rect>::new();
-                    // body_cascade.detect_multi_scale(
-                    //     &roi_gray,
-                    //     &mut bodies,
-                    //     1.1,               // scale_factor
-                    //     4,                 // min_neighbors
-                    //     0,                 // flags (use default)
-                    //     Size::new(50, 50), // min_size (adjust based on your scene) 60,60 30,30
-                    //     Size::new(0, 0),   // max_size (0 = no limit)
-                    // )?;
-
-                    // // Draw result
-                    // if !bodies.is_empty() {
-                    //     println!("motion_pixels {}, area: {}", motion_pixels, area);
-
-                    //     let filename = format!("motion-{}.jpg", frame_data.id);
-                    //     let folder =
-                    //         std::env::var("MOTION_FOLDER").unwrap_or_else(|_| "motion".into());
-                    //     let path = root.join(folder).join(filename);
-
-                    //     //save image
-                    //     opencv::imgcodecs::imwrite(
-                    //         &path.display().to_string(),
-                    //         &display,
-                    //         &Vector::new(),
-                    //     )?;
-                    // }
                 }
 
                 //load model from Git OPENCV
@@ -394,7 +329,7 @@ pub async fn use_farme(
 
                 //draw red rectangle
                 for face in faces.iter() {
-                    println!("FACE {:?}", face);
+                    // println!("FACE {:?}", face);
                     imgproc::rectangle(
                         &mut display,
                         face,
@@ -407,12 +342,9 @@ pub async fn use_farme(
 
                 if !faces.is_empty() {
                     log::info!("Face count: {}", faces.len());
-                    let output_path = &root
-                        .join("motion")
-                        .join(format!("face-{}.jpg", frame_data.id))
-                        .display()
-                        .to_string();
-                    imgcodecs::imwrite(output_path, &display, &Vector::new()).unwrap();
+                    
+                    let filename = folder_path.join(format!("face_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
+                    imgcodecs::imwrite(&filename, &display, &Vector::new()).unwrap();
                 }
             }
             None => {

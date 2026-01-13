@@ -42,7 +42,7 @@ const YOLOV8_CLASS_LABELS: [&str; 80] = [
 pub fn find_object_by_yolo(
     original_img: DynamicImage,
 ) -> Result<Vec<BoundingBox>, Box<dyn std::error::Error>> {
-	let root = get_project_root();
+    let root = get_project_root();
     let (img_width, img_height) = (original_img.width(), original_img.height());
     let img = original_img.resize_exact(640, 640, FilterType::CatmullRom);
     let mut input = Array::zeros((1, 3, 640, 640));
@@ -56,7 +56,7 @@ pub fn find_object_by_yolo(
     }
 
     let folder = std::env::var("FILES_FOLDER").unwrap_or_else(|_| "files".into());
-	let path = root.join(folder).join("yolov8m.onnx");
+    let path = root.join(folder).join("yolov8m.onnx");
     let mut model = Session::builder()?.commit_from_file(path)?;
     // Run YOLOv8 inference
     let outputs: SessionOutputs =

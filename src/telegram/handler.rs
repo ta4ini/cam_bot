@@ -12,8 +12,7 @@ use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
 };
-use tokio::fs::{self};
-use utils::get_project_root;
+use utils::{get_last_image};
 
 pub async fn handle_message(
     bot: Bot,
@@ -235,30 +234,21 @@ pub async fn handle_callback(
                     }
 
                     for prefix in ["face", "motion"] {
-                        let path = get_project_root()
-                            .join("motion")
-                            .join(format!(
-                                "{}-{}.jpg",
-                                prefix,
-                                camera_info_items.index(index).id
-                            ))
-                            .display()
-                            .to_string();
-
-                        match fs::metadata(&path).await {
-                            Ok(metadata) => {
-                                if metadata.is_file() {
-                                    bot.send_photo(chat_id, InputFile::file(path))
+                        let path_buf = get_last_image(prefix, &camera_info_items.index(index).id);
+                        match path_buf {
+                            Some(path) => {
+                                bot.send_photo(chat_id, InputFile::file(path))
                                         .caption(format!(
                                             "Изображение с камеры: {}",
                                             camera_info_items.index(index).id
                                         ))
                                         .await?;
-                                } else {
-                                    bot.send_message(chat_id, "Изображений нет").await?;
-                                }
+
+                                break;
+                            },
+                            None => {
+                                bot.send_message(chat_id, "Изображений нет").await?;
                             }
-                            _ => continue,
                         }
                     }
                 }
