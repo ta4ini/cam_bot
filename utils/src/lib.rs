@@ -1,8 +1,7 @@
 use std::{
-    fs,
-    path::{Path, PathBuf},
+    fs::{self, File}, io::{BufReader, Read}, path::{Path, PathBuf}
 };
-
+use serde::{Deserialize, de::DeserializeOwned};
 use chrono::Local;
 
 pub fn get_project_root() -> PathBuf {
@@ -59,4 +58,22 @@ pub fn get_last_image(prefix: &str, camera_id: &str) -> Option<PathBuf> {
     }
 
     latest_file
+}
+
+#[derive(Debug, Deserialize)]
+pub struct Face {
+    pub file: String,
+    pub name: String
+}
+
+pub fn deserialize_from_file<T: DeserializeOwned>(path: String) -> Result<Vec<T>, serde_json::Error> {
+    let file =  File::open(path).unwrap();
+    let mut reader = BufReader::new(file);
+
+    let mut buffer = String::new();
+    let _ = reader.read_to_string(&mut buffer);
+
+    let result = serde_json::from_str(&buffer);
+
+    result
 }

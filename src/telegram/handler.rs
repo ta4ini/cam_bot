@@ -2,7 +2,7 @@ use crate::{
     ArcRwLockUsers, CAMERAS, STOP_SENDER,
     device::{
         CameraInfo,
-        camera::{find_onvif_camera},
+        camera::{find_onvif_camera, train_face_recognizer},
         message::Messages,
     },
     start_worker,
@@ -12,7 +12,7 @@ use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
 };
-use utils::{get_last_image};
+use utils::get_last_image;
 
 pub async fn handle_message(
     bot: Bot,
@@ -201,6 +201,29 @@ pub async fn handle_message(
 
             return Ok(());
         }
+
+        if text == "/train" {
+            let users = users_ar.read().await;
+            let (is_active, is_admin) = &users.is_access(chat_id.0);
+
+            if *is_active && *is_admin {
+                match train_face_recognizer() {
+                    Ok(faces_count) => {
+                        bot.send_message(
+                            chat_id,
+                            format!("Модель лиц обучена, кол-во {}:", faces_count),
+                        )
+                        .await?;
+                    }
+                    Err(error) => {
+                        bot.send_message(chat_id, format!("Ошибка {:?}:", error))
+                            .await?;
+                    }
+                }
+            }
+
+            return Ok(());
+        }
     }
 
     bot.send_message(chat_id, &messages.unknown).await?;
@@ -238,14 +261,14 @@ pub async fn handle_callback(
                         match path_buf {
                             Some(path) => {
                                 bot.send_photo(chat_id, InputFile::file(path))
-                                        .caption(format!(
-                                            "Изображение с камеры: {}",
-                                            camera_info_items.index(index).id
-                                        ))
-                                        .await?;
+                                    .caption(format!(
+                                        "Изображение с камеры: {}",
+                                        camera_info_items.index(index).id
+                                    ))
+                                    .await?;
 
                                 break;
-                            },
+                            }
                             None => {
                                 bot.send_message(chat_id, "Изображений нет").await?;
                             }

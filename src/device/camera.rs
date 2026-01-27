@@ -3,17 +3,15 @@ use image::{DynamicImage, RgbImage};
 use log::warn;
 use opencv::{
     core::{AlgorithmHint, CV_8U, Mat, Point, Rect, Scalar, Size, Vector},
-    imgcodecs,
+    face, imgcodecs,
     imgproc::{
-        self, COLOR_BGR2RGB, ContourApproximationModes, MORPH_CLOSE,
-        MORPH_ELLIPSE, RetrievalModes, contour_area, cvt_color, find_contours,
-        get_structuring_element, morphology_ex,
+        self, COLOR_BGR2RGB, ContourApproximationModes, MORPH_CLOSE, MORPH_ELLIPSE, RetrievalModes,
+        contour_area, cvt_color, find_contours, get_structuring_element, morphology_ex,
     },
     objdetect::{self, CASCADE_SCALE_IMAGE},
     prelude::*,
     video::create_background_subtractor_mog2,
 };
-use utils::{create_dir, get_motion_folder_path, get_project_root};
 use std::{
     io::{BufReader, Read},
     time::Duration,
@@ -23,6 +21,7 @@ use tokio::{
     sync::{broadcast, mpsc},
     time::timeout,
 };
+use utils::{Face, create_dir, deserialize_from_file, get_motion_folder_path, get_project_root};
 use uuid::Uuid;
 use xml::reader::{EventReader, XmlEvent};
 use yolo::find_object_by_yolo;
@@ -186,7 +185,7 @@ pub async fn use_farme(
     mut frame_receiver: mpsc::Receiver<FrameData>,
     mut stop_receiver: broadcast::Receiver<()>,
 ) -> opencv::Result<()> {
-    let root = get_project_root();
+    let faces_info = get_faces_info().expect("Can not read face.json");
 
     let mut bg_subtractor: opencv::core::Ptr<opencv::video::BackgroundSubtractorMOG2> =
         create_background_subtractor_mog2(1000, 16.0, true).unwrap(); // MOG2 subtractor
@@ -270,9 +269,14 @@ pub async fn use_farme(
                             for body in boxes.iter() {
                                 imgproc::rectangle(
                                     &mut display,
-                                    Rect {x: body.x1 as i32, y: body.y1 as i32,  width: body.x2 as i32, height: body.y2 as i32 },
+                                    Rect {
+                                        x: body.x1 as i32,
+                                        y: body.y1 as i32,
+                                        width: body.x2 as i32,
+                                        height: body.y2 as i32,
+                                    },
                                     Scalar::new(0.0, 255.0, 0.0, 0.0), // Green BGR B G R A
-                                    2, // thickness
+                                    2,                                 // thickness
                                     imgproc::LINE_8,
                                     0,
                                 )?;
@@ -280,72 +284,173 @@ pub async fn use_farme(
 
                             // Draw result
                             if !boxes.is_empty() {
-                                let filename = folder_path.join(format!("motion_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
+                                let filename = folder_path
+                                    .join(format!(
+                                        "motion_{}_{}.jpg",
+                                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                                        frame_data.id
+                                    ))
+                                    .display()
+                                    .to_string();
                                 println!("filename {:?}", filename);
                                 //save image
-                                opencv::imgcodecs::imwrite(
-                                    &filename,
-                                    &display,
-                                    &Vector::new(),
-                                )?;
+                                opencv::imgcodecs::imwrite(&filename, &display, &Vector::new())?;
                             }
-                        },
-                        Err(err) => log::error!("Error {}", err)
+
+                            //find face
+                            let faces = detect_face(&frame_data.frame, false).unwrap();
+
+                            //trained model
+                            let mut model = face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0)?;
+                            opencv::prelude::FaceRecognizerTrait::read(
+                                &mut model,
+                                &get_project_root()
+                                    .join("files")
+                                    .join("face_model.yml")
+                                    .display()
+                                    .to_string(),
+                            )?; // ← Load from file
+
+                            //draw red rectangle
+                            for face in faces.iter() {
+                                println!("FACE {:?}", face);
+
+                                let face_roi = Mat::roi(&frame_data.frame, *face)?;
+                                // Resize to standard size (e.g., 200x200)
+                                let mut resized = Mat::default();
+                                opencv::imgproc::resize(
+                                    &face_roi,
+                                    &mut resized,
+                                    opencv::core::Size::new(200, 200),
+                                    0.0,
+                                    0.0,
+                                    opencv::imgproc::INTER_LINEAR,
+                                )?;
+
+                                // Convert to grayscale
+                                let mut gray = Mat::default();
+                                opencv::imgproc::cvt_color(
+                                    &resized,
+                                    &mut gray,
+                                    imgproc::COLOR_BGR2GRAY,
+                                    0,
+                                    AlgorithmHint::ALGO_HINT_DEFAULT,
+                                )?;
+                                // let filename = folder_path.join(format!("!!!_face_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
+                                // imgcodecs::imwrite(&filename, &gray, &Vector::new()).unwrap();
+                                let predicated_label = model.predict_label(&gray)?;
+
+                                imgproc::rectangle(
+                                    &mut display,
+                                    *face,
+                                    Scalar::new(0.0, 0.0, 255.0, 0.0), //B G R A
+                                    2,                                 // thickness
+                                    imgproc::LINE_8,
+                                    0,
+                                )?;
+
+                                if predicated_label >= 0
+                                    && let Some(face_info) =
+                                        faces_info.get(predicated_label as usize)
+                                {
+                                    // Draw name label
+                                    imgproc::put_text(
+                                        &mut display,
+                                        // &format!("{} ({:.2})", name, confidence),
+                                        &format!("Name: {}", face_info.name),
+                                        opencv::core::Point::new(face.x, face.y - 10),
+                                        imgproc::FONT_HERSHEY_SIMPLEX,
+                                        0.6,
+                                        opencv::core::Scalar::new(0.0, 255.0, 0.0, 0.0),
+                                        2,
+                                        imgproc::LINE_AA,
+                                        false,
+                                    )?;
+                                }
+                            }
+
+                            if !faces.is_empty() {
+                                log::info!("Face count: {}", faces.len());
+
+                                let filename = folder_path
+                                    .join(format!(
+                                        "face_{}_{}.jpg",
+                                        Local::now().format("%Y-%m-%d %H:%M:%S"),
+                                        frame_data.id
+                                    ))
+                                    .display()
+                                    .to_string();
+                                imgcodecs::imwrite(&filename, &display, &Vector::new()).unwrap();
+                            }
+                        }
+                        Err(err) => log::error!("Error {}", err),
                     };
                 }
 
-                //load model from Git OPENCV
-                let mut face_cascade = objdetect::CascadeClassifier::new(
-                    &root
-                        .join("model")
-                        .join("haarcascade_frontalface_default.xml")
-                        .display()
-                        .to_string(),
-                )
-                .expect("Can not load model from Git OPENCV: haarcascade_frontalface_default.xml");
+                // //load model from Git OPENCV
+                // let mut face_cascade = objdetect::CascadeClassifier::new(
+                //     &root
+                //         .join("model")
+                //         .join("haarcascade_frontalface_default.xml")
+                //         .display()
+                //         .to_string(),
+                // )
+                // .expect("Can not load model from Git OPENCV: haarcascade_frontalface_default.xml");
 
-                let mut gray = Mat::default();
-                opencv::imgproc::cvt_color(
-                    &frame_data.frame,
-                    &mut gray,
-                    opencv::imgproc::COLOR_BGR2GRAY,
-                    0,
-                    AlgorithmHint::ALGO_HINT_DEFAULT,
-                )
-                .expect("Can not convert original image to gray color");
-                //find face
-                let mut faces = Vector::<Rect>::new();
-                face_cascade
-                    .detect_multi_scale(
-                        &gray,
-                        &mut faces,
-                        1.1,
-                        40, //чем выше тем меньше ложных срабатываний
-                        CASCADE_SCALE_IMAGE,
-                        Size::new(30, 30),
-                        Size::new(0, 0),
-                    )
-                    .expect("Can not detect difference between images: detect face");
+                // let mut gray = Mat::default();
+                // opencv::imgproc::cvt_color(
+                //     &frame_data.frame,
+                //     &mut gray,
+                //     opencv::imgproc::COLOR_BGR2GRAY,
+                //     0,
+                //     AlgorithmHint::ALGO_HINT_DEFAULT,
+                // )
+                // .expect("Can not convert original image to gray color");
+                // //find face
+                // let mut faces = Vector::<Rect>::new();
+                // face_cascade
+                //     .detect_multi_scale(
+                //         &gray,
+                //         &mut faces,
+                //         1.1,
+                //         40, //чем выше тем меньше ложных срабатываний
+                //         CASCADE_SCALE_IMAGE,
+                //         Size::new(30, 30),
+                //         Size::new(0, 0),
+                //     )
+                //     .expect("Can not detect difference between images: detect face");
 
-                //draw red rectangle
-                for face in faces.iter() {
-                    // println!("FACE {:?}", face);
-                    imgproc::rectangle(
-                        &mut display,
-                        face,
-                        Scalar::new(0.0, 0.0, 255.0, 0.0), //B G R A
-                        2,                                 // thickness
-                        imgproc::LINE_8,
-                        0,
-                    )?;
-                }
+                // let mut loaded_model =face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0)?;
+                // opencv::prelude::FaceRecognizerTrait::read(&mut loaded_model, &get_project_root()
+                // .join("files")
+                // .join("face_model.yml")
+                // .display()
+                // .to_string())?;
 
-                if !faces.is_empty() {
-                    log::info!("Face count: {}", faces.len());
-                    
-                    let filename = folder_path.join(format!("face_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
-                    imgcodecs::imwrite(&filename, &display, &Vector::new()).unwrap();
-                }
+                // //draw red rectangle
+                // for face in faces.iter() {
+                //     // println!("FACE {:?}", face);
+                //     let mut label = -1;
+                //     let mut conf = 0.0;
+                //     loaded_model.predict(&gray, &mut label, &mut conf)?;
+                //     println!("Loaded model: label={}, confidence={:.2}", label, conf);
+
+                //     imgproc::rectangle(
+                //         &mut display,
+                //         face,
+                //         Scalar::new(0.0, 0.0, 255.0, 0.0), //B G R A
+                //         2,                                 // thickness
+                //         imgproc::LINE_8,
+                //         0,
+                //     )?;
+                // }
+
+                // if !faces.is_empty() {
+                //     log::info!("Face count: {}", faces.len());
+
+                //     let filename = folder_path.join(format!("face_{}_{}.jpg", Local::now().format("%Y-%m-%d %H:%M:%S"), frame_data.id)).display().to_string();
+                //     imgcodecs::imwrite(&filename, &display, &Vector::new()).unwrap();
+                // }
             }
             None => {
                 warn!("Frame channel closed");
@@ -421,17 +526,134 @@ pub fn mat_to_dynamic_image(mat: &Mat) -> Result<DynamicImage, Box<dyn std::erro
     // }
 }
 
-//     use face_recognition::{FaceLandmarks, FaceRecognition};
-//     https://github.com/ulagbulag/dlib-face-recognition/blob/master/examples/compare_faces/src/main.rs
-//     let known_image = image::open("known.jpg").unwrap();
-//     let unknown_image = image::open("unknown.jpg").unwrap();
+fn detect_face(
+    src: &Mat,
+    skip_convert_to_gray: bool,
+) -> Result<Vec<Rect>, Box<dyn std::error::Error>> {
+    //load model from Git OPENCV
+    let mut face_cascade = objdetect::CascadeClassifier::new(
+        &get_project_root()
+            .join("model")
+            .join("haarcascade_frontalface_default.xml")
+            .display()
+            .to_string(),
+    )
+    .expect("Can not load model from Git OPENCV: haarcascade_frontalface_default.xml");
 
-//     let known_encodings = FaceRecognition::get_face_encodings(&known_image, None);
-//     let unknown_encodings = FaceRecognition::get_face_encodings(&unknown_image, None);
+    let mut gray = Mat::default();
+    if skip_convert_to_gray {
+        gray = src.clone();
+    } else {
+        opencv::imgproc::cvt_color(
+            &src,
+            &mut gray,
+            opencv::imgproc::COLOR_BGR2GRAY,
+            0,
+            AlgorithmHint::ALGO_HINT_DEFAULT,
+        )
+        .expect("Can not convert original image to gray color");
+    }
 
-//     if let (Some(known), Some(unknown)) = (known_encodings.first(), unknown_encodings.first()) {
-//         let distance = FaceRecognition::face_distance(&[known.clone()], &unknown);
-//         if distance[0] < 0.6 { // Threshold for match
-//             println!("Match!");
-//         }
-//     }
+    //find face
+    let mut faces = Vector::<Rect>::new();
+    face_cascade
+        .detect_multi_scale(
+            &gray,
+            &mut faces,
+            1.1,
+            40, //чем выше тем меньше ложных срабатываний
+            CASCADE_SCALE_IMAGE,
+            Size::new(30, 30),
+            Size::new(0, 0),
+        )
+        .expect("Can not detect difference between images: detect face");
+
+    Ok(faces.into())
+}
+
+fn detect_face_and_resize(
+    src: &Mat,
+    skip_convert_to_gray: bool,
+) -> Result<Mat, Box<dyn std::error::Error>> {
+    let faces = detect_face(src, skip_convert_to_gray)?;
+    if faces.is_empty() {
+        return Err("No faces detetced".into());
+    }
+
+    // Take first face
+    let face_rect = faces.first().unwrap();
+    let face = Mat::roi(src, *face_rect)?;
+
+    // Resize to standard size (e.g., 200x200)
+    let mut resized = Mat::default();
+    opencv::imgproc::resize(
+        &face,
+        &mut resized,
+        opencv::core::Size::new(200, 200),
+        0.0,
+        0.0,
+        opencv::imgproc::INTER_LINEAR,
+    )?;
+
+    Ok(resized)
+}
+
+pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send>> {
+    let mut images: Vector<Mat> = Vector::new();
+    let mut labels: Vector<i32> = Vector::new();
+
+    let faces = get_faces_info().expect("Can not read face.json");
+    if faces.is_empty() {
+        return Ok(0);
+    }
+
+    for (index, face) in faces.iter().enumerate() {
+        let path = get_project_root()
+            .join("faces")
+            .join(&face.file)
+            .display()
+            .to_string();
+
+        let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE).unwrap();
+        let face = detect_face_and_resize(&img, true).unwrap();
+        if !face.empty() {
+            images.push(face);
+            labels.push(index as i32);
+        }
+    }
+
+    let mut model = face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0).unwrap();
+    model.train(&images, &labels).unwrap();
+    opencv::prelude::FaceRecognizerTraitConst::write(
+        &model,
+        &get_project_root()
+            .join("files")
+            .join("face_model.yml")
+            .display()
+            .to_string(),
+    )
+    .unwrap();
+
+    // let test_image = Mat::default();
+    // let test_image: Mat = imgcodecs::imread("motion/2026-01-26/1.jpg", imgcodecs::IMREAD_GRAYSCALE)?;
+    // let predicated_label = model.predict_label(&test_image)?;
+    // println!("predicated_label {}", predicated_label);
+    Ok(images.len())
+}
+
+fn get_faces_info() -> Result<Vec<Face>, serde_json::Error> {
+    let path = get_project_root()
+        .join("files")
+        .join("face.json")
+        .display()
+        .to_string();
+
+    if path.is_empty() {
+        log::info!("No file found: face.json");
+        return Ok(Vec::new());
+    }
+
+    let faces: Vec<Face> = deserialize_from_file(path)?;
+
+    Ok(faces)
+}

@@ -8,7 +8,6 @@ use crate::device::{
 };
 use crate::telegram::user::Users;
 use actix_web::{App, HttpRequest, HttpResponse, HttpServer, Responder, post, web};
-use utils::get_project_root;
 use std::{
     net::{IpAddr, Ipv4Addr},
     sync::{Arc, LazyLock},
@@ -22,6 +21,7 @@ use teloxide::{
 };
 use tokio::sync::mpsc;
 use tokio::sync::{RwLock, broadcast};
+use utils::get_project_root;
 use uuid::Uuid;
 
 pub static CAMERAS: LazyLock<Arc<RwLock<Vec<CameraInfo>>>> =
