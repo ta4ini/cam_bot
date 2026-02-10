@@ -73,7 +73,5 @@ pub fn deserialize_from_file<T: DeserializeOwned>(path: String) -> Result<Vec<T>
     let mut buffer = String::new();
     let _ = reader.read_to_string(&mut buffer);
 
-    let result = serde_json::from_str(&buffer);
-
-    result
+    serde_json::from_str(&buffer)
 }

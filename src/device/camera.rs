@@ -631,7 +631,7 @@ pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send
             .join("files")
             .join("face_model.yml");
     if face_model.exists() {
-        fs::remove_file(&face_model)?;
+        fs::remove_file(face_model)?;
     }
 
     let mut model = face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0)?;
