@@ -1,7 +1,19 @@
-/target
+debug/
+target/
+Cargo.lock
+
+**/*.onnx
+
 /model
-/motion
+/motion/
+/src/experiments
+faces/
 
 *.txt
 *.xml
+*.png
 .env
+.DS_Store
+user.json
+face.json
+face_model.yml

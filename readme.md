@@ -21,8 +21,8 @@ OPENAI_API_KEY=your_openai_api_key
 | `/find`           | Find cameras                         |
 | `/help`           | Show available commands              |
 | `/status`         | Show active devices                  |
-| `/sensitivity`    | Sensitivity                          |
-
+| `/stop`           | Stop recording                       |
+| `/restart`        | Restart.                             |
 
 ## Tech Stack
 

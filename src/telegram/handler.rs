@@ -1,22 +1,49 @@
-use crate::db::queries;
-// use crate::locales::messages::Messages;
-use crate::services::chart::draw_weekly_calories_chart;
-use chrono::Utc;
-use log::error;
-use reqwest::Url;
+use crate::{
+    ArcRwLockUsers, CAMERAS, STOP_SENDER,
+    device::{
+        CameraInfo,
+        camera::{find_onvif_camera, train_face_recognizer},
+        message::Messages,
+    },
+    start_worker,
+};
+use std::{ops::Index, time::Duration};
 use teloxide::{
     prelude::*,
     types::{InlineKeyboardButton, InlineKeyboardMarkup, InputFile, Message, ParseMode},
 };
-use crate::message::Messages;
+use utils::get_last_image;
 
-pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
+pub async fn handle_message(
+    bot: Bot,
+    msg: Message,
+    users_ar: ArcRwLockUsers,
+) -> ResponseResult<()> {
     let chat_id = msg.chat.id;
-    let messages = Messages::Default();
-    let camera_info = Vec<CameraInfo>::new();
+
+    let messages = Messages::default();
+
+    let is_active = {
+        let (is_active, _) = users_ar.read().await.is_access(chat_id.0);
+        is_active
+    };
 
     if let Some(text) = msg.text() {
         if text == "/start" {
+            let username = match msg.chat.username() {
+                Some(s) => s.to_string(),
+                None => String::from("no name"),
+            };
+
+            {
+                let mut users = users_ar.write().await;
+                users.read_from_file().await;
+                users.add_id(chat_id.0, username);
+                users.write_to_file().await;
+            }
+            // if let Err(e) = write_to_file(msg).await {
+            //     log::error!("Can't write user to file: {}", e);
+            // }
 
             bot.send_message(chat_id, &messages.welcome).await?;
 
@@ -32,76 +59,241 @@ pub async fn handle_message(bot: Bot, msg: Message) -> ResponseResult<()> {
         }
 
         if text == "/find" {
-            //match find_onvif_camera().await {
-        //         Ok(devices) => {
-        //              camera_info = devices;
-        //             bot.send_message(chat_id, &messages.is_device).await?;
-        //         }
-        //         Err(e) => {
-        //             log::error!("Error when find devices: {}", e.to_string());
-        //             bot.send_message(chat_id, &messages.error).await?;
-        //         }
-        //     }
+            if !is_active {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
+            bot.send_message(chat_id, &messages.search).await?;
+
+            match find_onvif_camera().await {
+                Ok(mut devices) => {
+                    let text = if !devices.is_empty() {
+                        let cnt = devices.len();
+                        println!("{}", cnt);
+                        let cameras = CAMERAS.write();
+                        cameras.await.append(&mut devices);
+                        format!("{}: {} ед.", &messages.is_device, cnt)
+                    } else {
+                        "Камер нет, пробуем подключиться к локальной".to_string()
+                    };
+
+                    bot.send_message(chat_id, text).await?;
+
+                    tokio::spawn(start_worker());
+                }
+                Err(e) => {
+                    log::error!("Error when find devices: {}", e);
+                    bot.send_message(chat_id, &messages.error).await?;
+                }
+            }
 
             return Ok(());
         }
 
-        if text == "/sensitivity" {
-            //чувствительность
+        if text == "/stop" {
+            if !is_active {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
+            if let Err(e) = STOP_SENDER.send(()) {
+                log::error!("Stop sender: {}", e);
+            }
+
+            bot.send_message(chat_id, &messages.stop).await?;
+
+            return Ok(());
+        }
+
+        if text == "/restart" {
+            if !CAMERAS.read().await.is_empty() {
+                if STOP_SENDER.send(()).is_ok() {
+                    tokio::time::sleep(Duration::from_secs(5)).await;
+                }
+
+                tokio::spawn(start_worker());
+
+                bot.send_message(chat_id, "Службы были остановлены и запущены заново")
+                    .await?;
+            }
 
             return Ok(());
         }
 
         if text == "/status" {
-            if camera_info.len() == 0{
-                bot.send_message(chat_id,&messages.no_device,).await?;
+            if !is_active {
+                bot.send_message(chat_id, &messages.access_denied).await?;
+                return Ok(());
+            }
+
+            let camera_info_items: Vec<CameraInfo> = {
+                let cameras = CAMERAS.read().await;
+                cameras.clone()
+            };
+
+            if camera_info_items.is_empty() {
+                bot.send_message(chat_id, &messages.no_device).await?;
 
                 return Ok(());
             }
 
             bot.send_message(
                 chat_id,
-                &messages.status,
-            ).await?;
-            
+                format!(
+                    "{}: {}",
+                    &messages.status,
+                    camera_info_items
+                        .iter()
+                        .map(|f| { format!("{}:{}", f.ip_addres.clone(), f.port.clone()) })
+                        .collect::<Vec<String>>()
+                        .join(", ")
+                ),
+            )
+            .await?;
+
+            if camera_info_items.is_empty() {
+                return Ok(());
+            }
+
+            let mut inline_keyboard = vec![];
+            let mut index = 0;
+            for chunks_info in camera_info_items.chunks(2) {
+                let mut chunks = vec![];
+                for value in chunks_info {
+                    chunks.push(InlineKeyboardButton::callback(
+                        format!("Камера {}", value.id),
+                        format!("camera_{}", index),
+                    ));
+                    index += 1;
+                }
+                inline_keyboard.push(chunks);
+            }
+            bot.send_message(chat_id, "Выбрать камеру и загрузить изображение:")
+                .reply_markup(InlineKeyboardMarkup::new(inline_keyboard))
+                .await?;
 
             return Ok(());
         }
 
-        return Ok(());
-    }
+        if text == "/access" {
+            let users = users_ar.read().await;
+            let (is_active, is_admin) = &users.is_access(chat_id.0);
 
-    if let Some(photos) = msg.photo() {
-        if let Some(photo) = photos.last() {
-            let file_id = &photo.file.id;
-            let file = bot.get_file(file_id).send().await?;
-            let token = std::env::var("TELEGRAM_BOT_TOKEN").unwrap();
-            let url = format!("https://api.telegram.org/file/bot{}/{}", token, file.path);
+            if *is_active && *is_admin {
+                let mut buttons = vec![];
+                for u in users.all_users() {
+                    if u.is_admin {
+                        continue;
+                    }
 
-            match crate::services::nutrition::analyze_image(&url, &user_lang).await {
-                Ok((summary, suggestion)) => {
-                    
-                    //bot.send_message(chat_id, response).await?;
+                    let active = if u.is_active { "✅" } else { "❌" };
+                    buttons.push(InlineKeyboardButton::callback(
+                        format!("{} {} {}", u.chat_id, u.username, active),
+                        format!("user_{}", u.chat_id),
+                    ));
                 }
-                Err(e) => {
-                    log::error!("Error in analyze_image: {}", e);
-                    bot.send_message(chat_id, &messages.unknown).await?;
+
+                bot.send_message(chat_id, "Участники:")
+                    .reply_markup(InlineKeyboardMarkup::new(vec![buttons]))
+                    .await?;
+            }
+
+            return Ok(());
+        }
+
+        if text == "/train" {
+            let users = users_ar.read().await;
+            let (is_active, is_admin) = &users.is_access(chat_id.0);
+
+            if *is_active && *is_admin {
+                match train_face_recognizer() {
+                    Ok(faces_count) => {
+                        bot.send_message(
+                            chat_id,
+                            format!("Модель лиц обучена, кол-во {}:", faces_count),
+                        )
+                        .await?;
+                    }
+                    Err(error) => {
+                        bot.send_message(chat_id, format!("Ошибка {:?}:", error))
+                            .await?;
+                    }
                 }
             }
+
+            return Ok(());
         }
-        return Ok(());
     }
 
     bot.send_message(chat_id, &messages.unknown).await?;
+
     Ok(())
 }
 
-pub async fn handle_callback(bot: Bot, q: CallbackQuery) -> ResponseResult<()> {
-    // if let Some(data) = q.data.as_deref() {
-    //     let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0));
+pub async fn handle_callback(
+    bot: Bot,
+    q: CallbackQuery,
+    users_ar: ArcRwLockUsers,
+) -> ResponseResult<()> {
+    if let Some(data) = q.data.as_deref() {
+        let messages = Messages::default();
 
-    //     bot.send_message(chat_id, greeting).await?;
-    // }
+        if data.contains("camera_") {
+            let info: Vec<&str> = data.split('_').collect();
+            match info[1].parse::<usize>() {
+                Ok(index) => {
+                    let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0));
+
+                    let camera_info_items: Vec<CameraInfo> = {
+                        let cameras = CAMERAS.read().await;
+                        cameras.clone()
+                    };
+
+                    if camera_info_items.is_empty() {
+                        bot.send_message(chat_id, &messages.no_device).await?;
+
+                        return Ok(());
+                    }
+
+                    for prefix in ["face", "motion"] {
+                        let path_buf = get_last_image(prefix, &camera_info_items.index(index).id);
+                        match path_buf {
+                            Some(path) => {
+                                bot.send_photo(chat_id, InputFile::file(path))
+                                    .caption(format!(
+                                        "Изображение с камеры: {}",
+                                        camera_info_items.index(index).id
+                                    ))
+                                    .await?;
+
+                                break;
+                            }
+                            None => {
+                                bot.send_message(chat_id, "Изображений нет").await?;
+                            }
+                        }
+                    }
+                }
+                Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
+            }
+        }
+
+        if data.contains("user_") {
+            let info: Vec<&str> = data.split('_').collect();
+            match info[1].parse::<i64>() {
+                Ok(chat_id) => {
+                    let mut users = users_ar.write().await;
+                    users.activate_deactivate(chat_id);
+
+                    let chat_id = q.message.as_ref().map(|m| m.chat().id).unwrap_or(ChatId(0));
+                    bot.send_message(chat_id, "Статус пользователя изменён")
+                        .await?;
+                }
+                Err(e) => log::error!("Error parsing '{}': {}", info[1], e),
+            }
+        }
+    }
 
     Ok(())
 }
