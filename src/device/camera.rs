@@ -1,3 +1,4 @@
+use std::fs;
 use chrono::Local;
 use image::{DynamicImage, RgbImage};
 use log::warn;
@@ -529,7 +530,7 @@ pub fn mat_to_dynamic_image(mat: &Mat) -> Result<DynamicImage, Box<dyn std::erro
 fn detect_face(
     src: &Mat,
     skip_convert_to_gray: bool,
-) -> Result<Vec<Rect>, Box<dyn std::error::Error>> {
+) -> Result<Vec<Rect>, Box<dyn std::error::Error + Send + Sync>> {
     //load model from Git OPENCV
     let mut face_cascade = objdetect::CascadeClassifier::new(
         &get_project_root()
@@ -561,7 +562,7 @@ fn detect_face(
             &gray,
             &mut faces,
             1.1,
-            40, //чем выше тем меньше ложных срабатываний
+            40, //40 чем выше тем меньше ложных срабатываний
             CASCADE_SCALE_IMAGE,
             Size::new(30, 30),
             Size::new(0, 0),
@@ -574,10 +575,11 @@ fn detect_face(
 fn detect_face_and_resize(
     src: &Mat,
     skip_convert_to_gray: bool,
-) -> Result<Mat, Box<dyn std::error::Error>> {
+) -> Result<Mat, Box<dyn std::error::Error + Send + Sync>> {
     let faces = detect_face(src, skip_convert_to_gray)?;
     if faces.is_empty() {
-        return Err("No faces detetced".into());
+        log::info!("No faces deteted");
+        return Ok(Mat::default());
     }
 
     // Take first face
@@ -598,7 +600,7 @@ fn detect_face_and_resize(
     Ok(resized)
 }
 
-pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send>> {
+pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send + Sync>> {
     let mut images: Vector<Mat> = Vector::new();
     let mut labels: Vector<i32> = Vector::new();
 
@@ -614,16 +616,26 @@ pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send
             .display()
             .to_string();
 
-        let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE).unwrap();
-        let face = detect_face_and_resize(&img, true).unwrap();
+        let img = imgcodecs::imread(&path, imgcodecs::IMREAD_GRAYSCALE)?;
+        println!("Path: {}", &path);
+        let face = detect_face_and_resize(&img, true)?;
         if !face.empty() {
             images.push(face);
             labels.push(index as i32);
+        }else {
+            log::info!("No face found from path: {}", path);
         }
     }
 
-    let mut model = face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0).unwrap();
-    model.train(&images, &labels).unwrap();
+    let face_model = &get_project_root()
+            .join("files")
+            .join("face_model.yml");
+    if face_model.exists() {
+        fs::remove_file(&face_model)?;
+    }
+
+    let mut model = face::LBPHFaceRecognizer::create(1, 8, 8, 8, 100.0)?;
+    model.train(&images, &labels)?;
     opencv::prelude::FaceRecognizerTraitConst::write(
         &model,
         &get_project_root()
@@ -631,8 +643,7 @@ pub fn train_face_recognizer() -> Result<usize, Box<dyn std::error::Error + Send
             .join("face_model.yml")
             .display()
             .to_string(),
-    )
-    .unwrap();
+    )?;
 
     // let test_image = Mat::default();
     // let test_image: Mat = imgcodecs::imread("motion/2026-01-26/1.jpg", imgcodecs::IMREAD_GRAYSCALE)?;
